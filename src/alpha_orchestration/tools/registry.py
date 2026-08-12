@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from alpha_orchestration.domain import JsonValue
@@ -27,13 +27,38 @@ class ToolDefinition:
     version: str = "1.0.0"
     read_only: bool = True
     idempotent: bool = True
+    _input_schema_snapshot: str = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        try:
+            encoded = json.dumps(
+                self.input_schema,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            decoded = json.loads(encoded)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("tool input schema must contain only strict JSON values") from exc
+        if not isinstance(decoded, dict) or decoded.get("type") != "object":
+            raise ValueError("tool input schema must describe an object")
+        object.__setattr__(self, "input_schema", decoded)
+        object.__setattr__(self, "_input_schema_snapshot", encoded)
+
+    def input_schema_copy(self) -> dict[str, JsonValue]:
+        """Return a detached copy of the trusted validation policy."""
+
+        decoded = json.loads(self._input_schema_snapshot)
+        if not isinstance(decoded, dict):  # pragma: no cover - guarded at construction
+            raise AssertionError("tool schema snapshot is not an object")
+        return decoded
 
     def public_contract(self) -> dict[str, JsonValue]:
         return {
             "name": self.name,
             "version": self.version,
             "description": self.description,
-            "input_schema": dict(self.input_schema),
+            "input_schema": self.input_schema_copy(),
             "annotations": {
                 "read_only": self.read_only,
                 "idempotent": self.idempotent,
@@ -70,7 +95,7 @@ class ToolRegistry:
             raise ValueError("tool names must be non-empty and have no surrounding whitespace")
         if name in self._definitions:
             raise ValueError(f"tool already registered: {name}")
-        if definition.input_schema.get("type") != "object":
+        if definition.input_schema_copy().get("type") != "object":
             raise ValueError(f"tool input schema must describe an object: {name}")
         self._definitions[name] = definition
 
@@ -129,7 +154,7 @@ class ToolRegistry:
             )
 
         try:
-            validate_json(call.arguments, definition.input_schema)
+            validate_json(call.arguments, definition.input_schema_copy())
             arguments = dict(call.arguments)
             source_ids = _source_ids(arguments.pop("source_ids", []))
             data = dict(definition.handler(arguments))

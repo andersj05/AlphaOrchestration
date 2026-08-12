@@ -121,3 +121,21 @@ def test_plan_hash_is_canonical_and_changes_with_policy() -> None:
     assert first.plan_hash == equivalent.plan_hash
     assert first.plan_hash != changed.plan_hash
     assert first.to_dict()["tasks"][0]["task_id"] == "facts"
+
+def test_task_policy_snapshot_is_stable_after_nested_schema_mutation() -> None:
+    schema = {
+        "type": "object",
+        "required": ["summary"],
+        "properties": {"summary": {"type": "string"}},
+        "additionalProperties": False,
+    }
+    definition = TaskDefinition("facts", "agent", output_schema=schema)
+    workflow = WorkflowDefinition("research", "1", (definition,))
+    original_hash = workflow.plan_hash
+
+    definition.output_schema["required"].clear()
+    definition.output_schema["properties"].clear()
+
+    assert definition.output_schema_copy()["required"] == ["summary"]
+    assert definition.to_dict()["output_schema"]["required"] == ["summary"]
+    assert workflow.plan_hash == original_hash

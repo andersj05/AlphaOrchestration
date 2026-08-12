@@ -272,3 +272,31 @@ def test_scoped_executor_rejects_untrusted_source_ids_before_execution() -> None
     assert result.payload["ok"] is False
     assert result.payload["error"]["code"] == "source_not_allowed"
     assert result.payload["error"]["details"]["unknown_source_ids"] == ["web:untrusted"]
+
+def test_tool_schema_snapshot_cannot_be_mutated_through_public_contracts() -> None:
+    schema = {
+        "type": "object",
+        "required": ["value"],
+        "properties": {"value": {"type": "number"}},
+        "additionalProperties": False,
+    }
+    definition = ToolDefinition(
+        name="test.required",
+        description="fixture",
+        input_schema=schema,
+        handler=lambda arguments: {"value": arguments["value"]},
+    )
+    registry = ToolRegistry([definition])
+    exposed = registry.contracts(["test.required"])[0]
+
+    definition.input_schema["required"].clear()
+    exposed["input_schema"]["required"].clear()
+
+    fresh = registry.contracts(["test.required"])[0]
+    result = asyncio.run(
+        registry.execute(ToolCall(name="test.required", call_id="missing-value", arguments={}))
+    )
+
+    assert fresh["input_schema"]["required"] == ["value"]
+    assert result.payload["ok"] is False
+    assert result.payload["error"]["code"] == "invalid_schema"

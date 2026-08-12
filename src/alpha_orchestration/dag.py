@@ -65,6 +65,7 @@ class TaskDefinition:
     max_new_tokens: int = 512
     max_action_bytes: int = 32_768
     repair_budget: int = 1
+    _output_schema_snapshot: str = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         _validate_name(self.task_id, "task_id", maximum=200)
@@ -108,6 +109,19 @@ class TaskDefinition:
         object.__setattr__(self, "depends_on", dependencies)
         object.__setattr__(self, "allowed_tools", tools)
         object.__setattr__(self, "output_schema", schema)
+        object.__setattr__(
+            self,
+            "_output_schema_snapshot",
+            json.dumps(schema, sort_keys=True, separators=(",", ":"), allow_nan=False),
+        )
+
+    def output_schema_copy(self) -> dict[str, JsonValue]:
+        """Return a detached copy of the controller-authored output policy."""
+
+        decoded = json.loads(self._output_schema_snapshot)
+        if not isinstance(decoded, dict):  # pragma: no cover - guarded at construction
+            raise AssertionError("output schema snapshot is not an object")
+        return decoded
 
     def to_dict(self) -> dict[str, JsonValue]:
         return {
@@ -116,7 +130,7 @@ class TaskDefinition:
             "depends_on": list(self.depends_on),
             "allowed_tools": list(self.allowed_tools),
             "prompt_key": self.prompt_key,
-            "output_schema": dict(self.output_schema),
+            "output_schema": self.output_schema_copy(),
             "required": self.required,
             "allow_failed_dependencies": self.allow_failed_dependencies,
             "max_turns": self.max_turns,
