@@ -11,7 +11,7 @@ from typing import Any
 
 from alpha_orchestration.domain import JsonValue
 from alpha_orchestration.ports import ToolCall, ToolResult
-from alpha_orchestration.tools.schema import SchemaValidationError, validate_json
+from alpha_orchestration.tools.schema import SchemaValidationError, validate_json, validate_schema
 
 ToolHandler = Callable[[Mapping[str, JsonValue]], Mapping[str, JsonValue]]
 
@@ -43,6 +43,10 @@ class ToolDefinition:
         if not isinstance(decoded, dict) or decoded.get("type") != "object":
             raise ValueError("tool input schema must describe an object")
         object.__setattr__(self, "input_schema", decoded)
+        try:
+            validate_schema(decoded)
+        except SchemaValidationError as exc:
+            raise ValueError(f"invalid tool input schema: {exc}") from exc
         object.__setattr__(self, "_input_schema_snapshot", encoded)
 
     def input_schema_copy(self) -> dict[str, JsonValue]:

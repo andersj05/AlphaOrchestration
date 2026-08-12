@@ -122,6 +122,7 @@ def test_plan_hash_is_canonical_and_changes_with_policy() -> None:
     assert first.plan_hash != changed.plan_hash
     assert first.to_dict()["tasks"][0]["task_id"] == "facts"
 
+
 def test_task_policy_snapshot_is_stable_after_nested_schema_mutation() -> None:
     schema = {
         "type": "object",
@@ -139,3 +140,29 @@ def test_task_policy_snapshot_is_stable_after_nested_schema_mutation() -> None:
     assert definition.output_schema_copy()["required"] == ["summary"]
     assert definition.to_dict()["output_schema"]["required"] == ["summary"]
     assert workflow.plan_hash == original_hash
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("required", "yes"),
+        ("allow_failed_dependencies", 1),
+    ],
+)
+def test_task_boolean_policies_require_actual_booleans(field: str, value: object) -> None:
+    with pytest.raises(DagValidationError, match="must be a boolean"):
+        TaskDefinition("facts", "agent", **{field: value})
+
+
+@pytest.mark.parametrize("keyword", ["oneOf", "requireed"])
+def test_task_rejects_unsupported_or_misspelled_schema_keywords(keyword: str) -> None:
+    with pytest.raises(DagValidationError, match="unsupported schema keywords"):
+        TaskDefinition(
+            "facts",
+            "agent",
+            output_schema={
+                "type": "object",
+                "properties": {},
+                keyword: [],
+            },
+        )

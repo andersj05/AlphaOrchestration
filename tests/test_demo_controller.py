@@ -3,8 +3,9 @@ from pathlib import Path
 
 from alpha_orchestration.adapters.demo import DemoRuntime, build_demo_events
 from alpha_orchestration.controller import RunController
-from alpha_orchestration.domain import CandidateBucket, RunSpec, RunStatus
+from alpha_orchestration.domain import CandidateBucket, EventKind, RunSpec, RunStatus
 from alpha_orchestration.journal import JsonlJournal, MemoryJournal, replay
+from alpha_orchestration.ports import EventDraft
 
 
 def test_demo_is_deterministic_and_finishes_as_triage() -> None:
@@ -65,3 +66,31 @@ def test_pause_and_resume_are_journaled() -> None:
     kinds = [event.kind.value for event in journal.events]
     assert "run_paused" in kinds
     assert "run_resumed" in kinds
+
+
+def test_invalid_runtime_draft_never_corrupts_the_journal(tmp_path: Path) -> None:
+    class InvalidRuntime:
+        async def stream(self, spec: RunSpec):  # type: ignore[no-untyped-def]
+            del spec
+            yield EventDraft(
+                EventKind.TASK_STARTED,
+                "invalid task start",
+                agent_id="unknown",
+                payload={"task_id": "missing"},
+            )
+
+    async def run(path: Path):
+        controller = RunController(
+            RunSpec(run_id="run-invalid-draft"),
+            InvalidRuntime(),
+            JsonlJournal(path),
+        )
+        return await controller.run()
+
+    path = tmp_path / "invalid-draft.jsonl"
+    state = asyncio.run(run(path))
+    restored = replay(path)
+
+    assert state.status is RunStatus.FAILED
+    assert restored == state
+    assert restored.last_sequence == 2

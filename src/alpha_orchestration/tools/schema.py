@@ -16,6 +16,108 @@ class SchemaValidationError(ValueError):
     """Raised when a tool argument does not match its advertised schema."""
 
 
+_SCHEMA_KEYS = frozenset(
+    {
+        "additionalProperties",
+        "anyOf",
+        "description",
+        "enum",
+        "exclusiveMaximum",
+        "exclusiveMinimum",
+        "items",
+        "maxItems",
+        "maxLength",
+        "maxProperties",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minProperties",
+        "minimum",
+        "properties",
+        "required",
+        "type",
+        "uniqueItems",
+    }
+)
+_JSON_TYPES = frozenset({"array", "boolean", "integer", "null", "number", "object", "string"})
+
+
+def validate_schema(schema: Mapping[str, Any], *, path: str = "$") -> None:
+    """Compile-check the strict JSON-Schema subset implemented below."""
+
+    if not isinstance(schema, Mapping) or any(not isinstance(key, str) for key in schema):
+        raise SchemaValidationError(f"{path}: schema must be an object with string keys")
+    unknown = sorted(set(schema) - _SCHEMA_KEYS)
+    if unknown:
+        raise SchemaValidationError(f"{path}: unsupported schema keywords {unknown!r}")
+
+    raw_type = schema.get("type")
+    if raw_type is not None:
+        types = [raw_type] if isinstance(raw_type, str) else raw_type
+        if not isinstance(types, list) or not types or any(item not in _JSON_TYPES for item in types):
+            raise SchemaValidationError(f"{path}.type: expected a supported type or non-empty type array")
+        if len(types) != len(set(types)):
+            raise SchemaValidationError(f"{path}.type: duplicate types are not allowed")
+
+    if "description" in schema and not isinstance(schema["description"], str):
+        raise SchemaValidationError(f"{path}.description: expected string")
+    if "enum" in schema and (not isinstance(schema["enum"], list) or not schema["enum"]):
+        raise SchemaValidationError(f"{path}.enum: expected a non-empty array")
+
+    alternatives = schema.get("anyOf")
+    if alternatives is not None:
+        if not isinstance(alternatives, list) or not alternatives:
+            raise SchemaValidationError(f"{path}.anyOf: expected a non-empty array")
+        for index, option in enumerate(alternatives):
+            validate_schema(option, path=f"{path}.anyOf[{index}]")
+
+    properties = schema.get("properties", {})
+    if not isinstance(properties, Mapping) or any(not isinstance(key, str) for key in properties):
+        raise SchemaValidationError(f"{path}.properties: expected an object with string keys")
+    for key, child in properties.items():
+        validate_schema(child, path=f"{path}.properties.{key}")
+
+    required = schema.get("required", [])
+    if (
+        not isinstance(required, list)
+        or any(not isinstance(key, str) or not key for key in required)
+        or len(required) != len(set(required))
+    ):
+        raise SchemaValidationError(f"{path}.required: expected unique non-empty strings")
+    undeclared = sorted(set(required) - set(properties))
+    if undeclared:
+        raise SchemaValidationError(f"{path}.required: undeclared properties {undeclared!r}")
+
+    additional = schema.get("additionalProperties", True)
+    if not isinstance(additional, (bool, Mapping)):
+        raise SchemaValidationError(f"{path}.additionalProperties: expected boolean or schema")
+    if isinstance(additional, Mapping):
+        validate_schema(additional, path=f"{path}.additionalProperties")
+
+    if "items" in schema:
+        validate_schema(schema["items"], path=f"{path}.items")
+    if "uniqueItems" in schema and not isinstance(schema["uniqueItems"], bool):
+        raise SchemaValidationError(f"{path}.uniqueItems: expected boolean")
+
+    for key in ("minItems", "maxItems", "minLength", "maxLength", "minProperties", "maxProperties"):
+        value = schema.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
+            raise SchemaValidationError(f"{path}.{key}: expected a non-negative integer")
+    for key in ("minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"):
+        value = schema.get(key)
+        if value is not None and (not _is_number(value) or (isinstance(value, float) and not math.isfinite(value))):
+            raise SchemaValidationError(f"{path}.{key}: expected a finite number")
+
+    for lower, upper in (
+        ("minItems", "maxItems"),
+        ("minLength", "maxLength"),
+        ("minProperties", "maxProperties"),
+        ("minimum", "maximum"),
+    ):
+        if lower in schema and upper in schema and schema[lower] > schema[upper]:
+            raise SchemaValidationError(f"{path}: {lower} must not exceed {upper}")
+
+
 def validate_json(value: Any, schema: Mapping[str, Any], *, path: str = "$") -> None:
     """Validate ``value`` against the JSON-Schema subset used by Alpha tools."""
 
@@ -47,7 +149,7 @@ def validate_json(value: Any, schema: Mapping[str, Any], *, path: str = "$") -> 
     elif isinstance(value, str):
         _validate_string(value, schema, path)
     elif _is_number(value):
-        _validate_number(float(value), schema, path)
+        _validate_number(value, schema, path)
 
 
 def _validate_object(value: Mapping[Any, Any], schema: Mapping[str, Any], path: str) -> None:
@@ -103,8 +205,8 @@ def _validate_string(value: str, schema: Mapping[str, Any], path: str) -> None:
         raise SchemaValidationError(f"{path}: string must contain at most {maximum} characters")
 
 
-def _validate_number(value: float, schema: Mapping[str, Any], path: str) -> None:
-    if not math.isfinite(value):
+def _validate_number(value: int | float, schema: Mapping[str, Any], path: str) -> None:
+    if isinstance(value, float) and not math.isfinite(value):
         raise SchemaValidationError(f"{path}: number must be finite")
     if "minimum" in schema and value < schema["minimum"]:
         raise SchemaValidationError(f"{path}: must be >= {schema['minimum']}")

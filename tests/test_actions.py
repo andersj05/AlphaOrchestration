@@ -44,7 +44,7 @@ def test_duplicate_keys_are_rejected_at_every_depth(raw: str) -> None:
         '{"kind":"final","payload":{},"commentary":"ignore me"}',
         '{"kind":"tool_calls","calls":[{"name":"x","arguments":{},"call_id":"model-owned"}]}',
         '{"kind":"final"}',
-        '[]',
+        "[]",
     ],
 )
 def test_missing_extra_and_wrong_shape_fields_are_rejected(raw: str) -> None:
@@ -76,8 +76,7 @@ def test_utf8_byte_and_call_count_bounds_are_nonrepairable_policy_failures() -> 
         parse_action(oversized, max_bytes=len(oversized))
     with pytest.raises(ActionParseError) as call_error:
         parse_action(
-            '{"kind":"tool_calls","calls":['
-            '{"name":"a","arguments":{}},{"name":"b","arguments":{}}]}',
+            '{"kind":"tool_calls","calls":[{"name":"a","arguments":{}},{"name":"b","arguments":{}}]}',
             max_calls=1,
         )
 
@@ -92,4 +91,14 @@ def test_unknown_action_kind_is_a_compact_repairable_failure() -> None:
         parse_action('{"kind":"delegate","payload":{}}')
 
     assert raised.value.code is ActionErrorCode.UNKNOWN_KIND
+    assert raised.value.repairable is True
+
+
+def test_decoder_numeric_limits_become_repairable_invalid_json() -> None:
+    raw = '{"kind":"final","payload":{"value":' + ("9" * 5_000) + "}}"
+
+    with pytest.raises(ActionParseError) as raised:
+        parse_action(raw)
+
+    assert raised.value.code is ActionErrorCode.INVALID_JSON
     assert raised.value.repairable is True

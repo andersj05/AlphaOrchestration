@@ -12,6 +12,7 @@ from enum import StrEnum
 from typing import Any
 
 from alpha_orchestration.domain import JsonValue
+from alpha_orchestration.tools.schema import SchemaValidationError, validate_schema
 
 MAX_TASKS = 256
 MAX_ACTIVE_SLOTS = 8
@@ -71,6 +72,13 @@ class TaskDefinition:
         _validate_name(self.task_id, "task_id", maximum=200)
         _validate_name(self.agent_id, "agent_id", maximum=200)
         _validate_name(self.prompt_key, "prompt_key", maximum=200)
+        if not isinstance(self.required, bool):
+            raise DagValidationError(DagErrorCode.INVALID_FIELD, "required must be a boolean")
+        if not isinstance(self.allow_failed_dependencies, bool):
+            raise DagValidationError(
+                DagErrorCode.INVALID_FIELD,
+                "allow_failed_dependencies must be a boolean",
+            )
         dependencies = _string_tuple(self.depends_on, "depends_on", maximum=MAX_DEPENDENCIES)
         tools = _string_tuple(self.allowed_tools, "allowed_tools", maximum=MAX_ALLOWED_TOOLS)
         if self.task_id in dependencies:
@@ -101,6 +109,10 @@ class TaskDefinition:
                 "allowed_tools requires a positive max_tool_calls budget",
             )
         schema = _canonical_object(self.output_schema, "output_schema")
+        try:
+            validate_schema(schema)
+        except SchemaValidationError as exc:
+            raise DagValidationError(DagErrorCode.INVALID_FIELD, f"invalid output_schema: {exc}") from exc
         if schema.get("type") != "object":
             raise DagValidationError(
                 DagErrorCode.INVALID_FIELD,

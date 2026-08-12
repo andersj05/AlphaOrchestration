@@ -50,8 +50,9 @@ class RunController:
                 agent_id=draft.agent_id,
                 payload=draft.payload,
             )
+            next_state = reduce_event(self.state, event)
             self.journal.append(event)
-            self.state = reduce_event(self.state, event)
+            self.state = next_state
             for subscriber in tuple(self._subscribers):
                 subscriber(event)
             return event

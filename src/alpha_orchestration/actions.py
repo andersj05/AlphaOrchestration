@@ -135,7 +135,7 @@ def parse_action(
             str(exc),
             repairable=True,
         ) from exc
-    except (json.JSONDecodeError, RecursionError) as exc:
+    except (json.JSONDecodeError, RecursionError, ValueError, OverflowError) as exc:
         raise ActionParseError(
             ActionErrorCode.INVALID_JSON,
             f"action is not one complete JSON value: {exc}",

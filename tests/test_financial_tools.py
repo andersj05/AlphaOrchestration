@@ -1,5 +1,7 @@
 import asyncio
 
+import pytest
+
 from alpha_orchestration.ports import ToolCall
 from alpha_orchestration.tools.finance import build_financial_tool_registry, financial_tools_for_agent
 from alpha_orchestration.tools.registry import ToolDefinition, ToolRegistry
@@ -39,9 +41,7 @@ def test_tool_validation_returns_a_compact_repairable_error() -> None:
                 name="finance.calculate",
                 call_id="bad-number",
                 arguments={
-                    "operations": [
-                        {"id": "growth", "operation": "percent_change", "current": True, "prior": 100}
-                    ]
+                    "operations": [{"id": "growth", "operation": "percent_change", "current": True, "prior": 100}]
                 },
             )
         )
@@ -61,11 +61,7 @@ def test_semantic_math_error_does_not_emit_nan_or_infinity() -> None:
             ToolCall(
                 name="finance.calculate",
                 call_id="zero-denominator",
-                arguments={
-                    "operations": [
-                        {"id": "bad_ratio", "operation": "ratio", "numerator": 5, "denominator": 0}
-                    ]
-                },
+                arguments={"operations": [{"id": "bad_ratio", "operation": "ratio", "numerator": 5, "denominator": 0}]},
             )
         )
     )
@@ -273,6 +269,7 @@ def test_scoped_executor_rejects_untrusted_source_ids_before_execution() -> None
     assert result.payload["error"]["code"] == "source_not_allowed"
     assert result.payload["error"]["details"]["unknown_source_ids"] == ["web:untrusted"]
 
+
 def test_tool_schema_snapshot_cannot_be_mutated_through_public_contracts() -> None:
     schema = {
         "type": "object",
@@ -293,10 +290,22 @@ def test_tool_schema_snapshot_cannot_be_mutated_through_public_contracts() -> No
     exposed["input_schema"]["required"].clear()
 
     fresh = registry.contracts(["test.required"])[0]
-    result = asyncio.run(
-        registry.execute(ToolCall(name="test.required", call_id="missing-value", arguments={}))
-    )
+    result = asyncio.run(registry.execute(ToolCall(name="test.required", call_id="missing-value", arguments={})))
 
     assert fresh["input_schema"]["required"] == ["value"]
     assert result.payload["ok"] is False
     assert result.payload["error"]["code"] == "invalid_schema"
+
+
+def test_tool_definition_rejects_unsupported_schema_keywords() -> None:
+    with pytest.raises(ValueError, match="unsupported schema keywords"):
+        ToolDefinition(
+            name="test.unsupported-schema",
+            description="fixture",
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "oneOf": [],
+            },
+            handler=lambda _: {},
+        )
