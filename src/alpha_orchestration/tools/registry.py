@@ -142,8 +142,20 @@ class ToolRegistry:
                     f"tool result exceeds {self._max_result_bytes} bytes",
                 )
             return ToolResult(call_id=call.call_id, payload=payload, source_ids=source_ids)
-        except (SchemaValidationError, ToolInputError, ValueError) as exc:
-            return _failure(call, "invalid_arguments", str(exc))
+        except SchemaValidationError as exc:
+            return _failure(
+                call,
+                "invalid_schema",
+                str(exc),
+                details={"phase": "schema"},
+            )
+        except (ToolInputError, ValueError) as exc:
+            return _failure(
+                call,
+                "invalid_arguments",
+                str(exc),
+                details={"phase": "semantic"},
+            )
         except (ArithmeticError, OverflowError) as exc:
             return _failure(call, "calculation_error", str(exc))
 

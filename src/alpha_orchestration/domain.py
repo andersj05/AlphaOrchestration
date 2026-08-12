@@ -202,6 +202,7 @@ class TaskState:
     agent_id: str
     depends_on: tuple[str, ...]
     required: bool
+    allow_failed_dependencies: bool = False
     status: TaskStatus = TaskStatus.QUEUED
     turns: int = 0
     tool_calls: int = 0

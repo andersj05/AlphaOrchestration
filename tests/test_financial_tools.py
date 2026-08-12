@@ -48,7 +48,8 @@ def test_tool_validation_returns_a_compact_repairable_error() -> None:
     )
 
     assert result.payload["ok"] is False
-    assert result.payload["error"]["code"] == "invalid_arguments"
+    assert result.payload["error"]["code"] == "invalid_schema"
+    assert result.payload["error"]["details"]["phase"] == "schema"
     assert "expected number" in result.payload["error"]["message"]
     assert result.retryable is False
 
@@ -71,6 +72,7 @@ def test_semantic_math_error_does_not_emit_nan_or_infinity() -> None:
 
     assert result.payload["ok"] is False
     assert result.payload["error"]["code"] == "invalid_arguments"
+    assert result.payload["error"]["details"]["phase"] == "semantic"
     assert "denominator must not be zero" in result.payload["error"]["message"]
 
 

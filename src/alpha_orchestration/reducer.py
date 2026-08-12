@@ -121,11 +121,17 @@ def _planned_tasks(payload: dict[str, Any]) -> dict[str, TaskState]:
         required = _require(raw_task, "required")
         if not isinstance(required, bool):
             raise StateInvariantError(f"task {task_id!r} required must be a boolean")
+        allow_failed_dependencies = raw_task.get("allow_failed_dependencies", False)
+        if not isinstance(allow_failed_dependencies, bool):
+            raise StateInvariantError(
+                f"task {task_id!r} allow_failed_dependencies must be a boolean"
+            )
         tasks[task_id] = TaskState(
             task_id=task_id,
             agent_id=agent_id,
             depends_on=tuple(dependencies),
             required=required,
+            allow_failed_dependencies=allow_failed_dependencies,
         )
 
     for task in tasks.values():
@@ -268,10 +274,13 @@ def reduce_event(state: RunState, event: RunEvent) -> RunState:
 
         if event.kind is EventKind.TASK_STARTED:
             _transition(task, event, frozenset({TaskStatus.QUEUED}))
+            allowed_dependency_states = (
+                _TASK_TERMINAL if task.allow_failed_dependencies else _TASK_SUCCESS
+            )
             blocked = sorted(
                 dependency
                 for dependency in task.depends_on
-                if state.tasks[dependency].status not in _TASK_SUCCESS
+                if state.tasks[dependency].status not in allowed_dependency_states
             )
             if blocked:
                 raise StateInvariantError(
