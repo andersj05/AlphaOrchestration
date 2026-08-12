@@ -6,9 +6,12 @@ import asyncio
 import os
 import time
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Any
 
 import httpx
+
+from alpha_orchestration.data.observations import ObservationBatch
 
 
 def normalize_cik(cik: str | int) -> str:
@@ -103,3 +106,22 @@ class SecDataClient:
     async def __aexit__(self, exc_type: object, exc: object, traceback: object) -> None:
         del exc_type, exc, traceback
         await self.close()
+
+
+def map_sec_company_facts(
+    payload: Mapping[str, Any],
+    *,
+    retrieved_at: datetime,
+    forms: tuple[str, ...] = ("10-K", "10-Q", "10-K/A", "10-Q/A"),
+    ticker: str | None = None,
+) -> ObservationBatch:
+    """Normalize an SEC company-facts payload through the provider mapper."""
+
+    from alpha_orchestration.data.sec_mapping import map_sec_company_facts as mapper
+
+    return mapper(
+        payload,
+        retrieved_at=retrieved_at,
+        forms=forms,
+        ticker=ticker,
+    )

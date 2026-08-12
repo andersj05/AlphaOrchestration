@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import StrEnum
@@ -312,6 +313,22 @@ class ObservationBatch:
             "issues": [item.to_dict() for item in self.issues],
         }
 
+    def resolve_evidence(self, evidence_ids: Sequence[str]) -> tuple[EvidenceRecord, ...]:
+        """Resolve IDs in caller order and fail closed on duplicates or unknown IDs."""
+
+        if isinstance(evidence_ids, (str, bytes)) or not isinstance(evidence_ids, Sequence):
+            raise ValueError("evidence_ids must be a sequence of strings")
+        requested = tuple(evidence_ids)
+        if any(not isinstance(evidence_id, str) or not evidence_id for evidence_id in requested):
+            raise ValueError("evidence_ids must contain only non-empty strings")
+        if len(requested) != len(set(requested)):
+            raise ValueError("evidence_ids must not contain duplicates")
+        indexed = {record.evidence_id: record for record in self.evidence}
+        unknown = sorted(set(requested).difference(indexed))
+        if unknown:
+            raise ValueError(f"unknown evidence IDs: {unknown!r}")
+        return tuple(indexed[evidence_id] for evidence_id in requested)
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ObservationBatch:
         return cls(
@@ -335,9 +352,7 @@ def canonical_content_hash(value: JsonValue) -> str:
 
 
 def evidence_id_for(provider: DataProvider, source_kind: str, locator: dict[str, JsonValue]) -> str:
-    digest = canonical_content_hash(
-        {"provider": provider.value, "source_kind": source_kind, "locator": locator}
-    )
+    digest = canonical_content_hash({"provider": provider.value, "source_kind": source_kind, "locator": locator})
     return f"{provider.value}:{source_kind}:{digest[:24]}"
 
 

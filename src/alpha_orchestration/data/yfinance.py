@@ -8,9 +8,12 @@ this module.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from typing import Any
+
+from alpha_orchestration.data.observations import ObservationBatch
 
 
 class YFinanceUnavailable(RuntimeError):
@@ -107,3 +110,39 @@ def _plain_value(value: Any) -> Any:
     if hasattr(value, "item"):
         return value.item()
     return value
+
+
+def map_yfinance_snapshot(
+    snapshot: MarketSnapshot,
+    *,
+    observed_at: datetime,
+    retrieved_at: datetime,
+) -> ObservationBatch:
+    """Normalize a fast-info market snapshot through the provider mapper."""
+
+    from alpha_orchestration.data.yfinance_mapping import map_yfinance_snapshot as mapper
+
+    return mapper(snapshot, observed_at=observed_at, retrieved_at=retrieved_at)
+
+
+def map_yfinance_history(
+    ticker: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    currency: str,
+    auto_adjust: bool,
+    retrieved_at: datetime,
+    interval: str = "1d",
+) -> ObservationBatch:
+    """Normalize plain yfinance history rows through the provider mapper."""
+
+    from alpha_orchestration.data.yfinance_mapping import map_yfinance_history as mapper
+
+    return mapper(
+        ticker,
+        rows,
+        currency=currency,
+        auto_adjust=auto_adjust,
+        retrieved_at=retrieved_at,
+        interval=interval,
+    )
