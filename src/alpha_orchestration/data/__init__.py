@@ -1,0 +1,1 @@
+"""Normalized external data adapters."""

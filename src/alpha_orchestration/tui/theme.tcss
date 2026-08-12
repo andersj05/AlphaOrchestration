@@ -1,0 +1,263 @@
+$alpha-background: #0B0F14;
+$alpha-panel: #121820;
+$alpha-panel-raised: #18212B;
+$alpha-border: #2A3948;
+$alpha-text: #D7E3EE;
+$alpha-muted: #8293A7;
+$alpha-accent: #54D6FF;
+$alpha-success: #7EE787;
+$alpha-warning: #E3B341;
+$alpha-danger: #FF6B6B;
+$alpha-idea: #C099FF;
+
+Screen {
+    background: $alpha-background;
+    color: $alpha-text;
+}
+
+#mission-shell {
+    width: 100%;
+    height: 100%;
+    align: center middle;
+    padding: 1 2;
+}
+
+#mission-card {
+    width: 78;
+    height: auto;
+    max-height: 44;
+    padding: 2 3;
+    background: $alpha-panel;
+    border: round $alpha-border;
+}
+
+#mission-brand {
+    height: 2;
+    color: $alpha-text;
+    text-style: bold;
+    content-align: left middle;
+}
+
+#mission-kicker {
+    height: 2;
+    color: $alpha-accent;
+    text-style: bold;
+}
+
+#mission-copy {
+    height: 4;
+    color: $alpha-muted;
+    margin-bottom: 1;
+}
+
+.field-label {
+    height: 1;
+    color: $alpha-muted;
+    text-style: bold;
+}
+
+Input, Select {
+    background: $alpha-panel-raised;
+    border: tall $alpha-border;
+    color: $alpha-text;
+    margin-bottom: 1;
+}
+
+Input:focus, Select:focus {
+    border: tall $alpha-accent;
+}
+
+.field-row {
+    height: 5;
+}
+
+.field-block {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#mission-stats {
+    height: 5;
+    margin-top: 1;
+}
+
+.mission-stat {
+    width: 1fr;
+    height: 4;
+    padding: 1 2;
+    margin-right: 1;
+    background: $alpha-panel-raised;
+    border-left: thick $alpha-accent;
+}
+
+#demo-notice {
+    height: 4;
+    padding: 1 2;
+    background: #171A1B;
+    border-left: thick $alpha-warning;
+    color: $alpha-muted;
+    margin-bottom: 1;
+}
+
+#mission-actions {
+    height: 3;
+    align-horizontal: right;
+}
+
+Button {
+    min-width: 16;
+    margin-left: 1;
+}
+
+Button.-primary {
+    background: #116A82;
+    color: #F2FBFF;
+}
+
+#top-banner {
+    height: 3;
+    padding: 1 2 0 2;
+    background: $alpha-panel;
+    border-bottom: solid $alpha-border;
+}
+
+#run-progress {
+    height: 1;
+    padding: 0;
+    margin: 0 2;
+}
+
+#metric-row {
+    height: 5;
+    padding: 1 2 0 2;
+}
+
+.metric {
+    width: 1fr;
+    height: 4;
+    margin-right: 1;
+    padding: 1 2;
+    background: $alpha-panel-raised;
+    border-left: thick $alpha-border;
+}
+
+#main-grid {
+    height: 1fr;
+    padding: 0 2 1 2;
+}
+
+.panel {
+    height: 100%;
+    background: $alpha-panel;
+    border: round $alpha-border;
+    padding: 0 1;
+}
+
+#left-pane {
+    width: 35;
+    min-width: 30;
+    margin-right: 1;
+}
+
+#center-pane {
+    width: 1fr;
+    min-width: 48;
+    margin-right: 1;
+}
+
+#right-pane {
+    width: 42;
+    min-width: 34;
+}
+
+.section-title {
+    height: 2;
+    padding: 1 1 0 1;
+    color: $alpha-muted;
+    text-style: bold;
+}
+
+#pipeline {
+    height: 7;
+    padding: 0 1;
+}
+
+#agent-table {
+    height: 1fr;
+}
+
+#activity-log {
+    height: 3fr;
+    padding: 0 1;
+    background: $alpha-background;
+    border: solid $alpha-border;
+}
+
+#evidence-table {
+    height: 2fr;
+}
+
+#candidate-table {
+    height: 11;
+}
+
+#candidate-scroll {
+    height: 1fr;
+    padding: 0 1 1 1;
+    background: $alpha-background;
+    border: solid $alpha-border;
+}
+
+#candidate-detail {
+    height: auto;
+    color: $alpha-text;
+}
+
+DataTable {
+    background: $alpha-panel;
+    color: $alpha-text;
+}
+
+DataTable > .datatable--header {
+    background: $alpha-panel-raised;
+    color: $alpha-muted;
+    text-style: bold;
+}
+
+DataTable > .datatable--cursor {
+    background: #203442;
+    color: $alpha-text;
+}
+
+#safety-bar {
+    height: 2;
+    content-align: center middle;
+    background: #171A1B;
+    color: $alpha-warning;
+    text-style: bold;
+}
+
+Footer {
+    background: $alpha-panel-raised;
+    color: $alpha-muted;
+}
+
+#help-dialog {
+    width: 64;
+    height: 22;
+    align: center middle;
+    padding: 2 3;
+    background: $alpha-panel-raised;
+    border: round $alpha-accent;
+}
+
+#help-title {
+    height: 3;
+    color: $alpha-accent;
+    text-style: bold;
+}
+
+#close-help {
+    dock: bottom;
+}
+
