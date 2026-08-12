@@ -1501,7 +1501,7 @@ def _invalid_model_result_trace(
     code, message = error
     return {
         "request_id": request_id,
-        "output_text": None,
+        "output_text": "",
         "output_bytes": 0,
         "output_hash": _text_hash(""),
         "output_truncated": False,
