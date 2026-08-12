@@ -50,6 +50,17 @@ class AgentStatus(StrEnum):
     FAILED = "failed"
 
 
+class TaskStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    WAITING_MODEL = "waiting_model"
+    WAITING_TOOL = "waiting_tool"
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
 class Stage(StrEnum):
     UNIVERSE = "universe"
     EVIDENCE = "evidence"
@@ -83,8 +94,19 @@ class EventKind(StrEnum):
     AGENT_PROGRESS = "agent_progress"
     AGENT_COMPLETED = "agent_completed"
     AGENT_FAILED = "agent_failed"
+    WORKFLOW_PLANNED = "workflow_planned"
+    TASK_STARTED = "task_started"
+    MODEL_TURN_STARTED = "model_turn_started"
+    MODEL_TURN_COMPLETED = "model_turn_completed"
+    ACTION_REJECTED = "action_rejected"
     TOOL_STARTED = "tool_started"
     TOOL_COMPLETED = "tool_completed"
+    TOOL_REJECTED = "tool_rejected"
+    TOOL_FAILED = "tool_failed"
+    TASK_COMPLETED = "task_completed"
+    TASK_FAILED = "task_failed"
+    TASK_SKIPPED = "task_skipped"
+    WORKFLOW_COMPLETED = "workflow_completed"
     EVIDENCE_ADDED = "evidence_added"
     CANDIDATE_UPDATED = "candidate_updated"
 
@@ -175,6 +197,19 @@ class AgentState:
 
 
 @dataclass(frozen=True, slots=True)
+class TaskState:
+    task_id: str
+    agent_id: str
+    depends_on: tuple[str, ...]
+    required: bool
+    status: TaskStatus = TaskStatus.QUEUED
+    turns: int = 0
+    tool_calls: int = 0
+    output: JsonValue = None
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Evidence:
     evidence_id: str
     title: str
@@ -250,6 +285,9 @@ class RunState:
     completed_stages: tuple[Stage, ...] = ()
     progress: int = 0
     agents: dict[str, AgentState] = field(default_factory=dict)
+    workflow_id: str | None = None
+    workflow_version: str | None = None
+    tasks: dict[str, TaskState] = field(default_factory=dict)
     evidence: dict[str, Evidence] = field(default_factory=dict)
     candidates: dict[str, Candidate] = field(default_factory=dict)
     recent_events: tuple[RunEvent, ...] = ()
