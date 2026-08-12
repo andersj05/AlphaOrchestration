@@ -15,15 +15,18 @@ The intended division of work is:
   rounding, and formula metadata;
 - a later validator decides whether the result is sufficiently grounded for a report.
 
-This is currently library and registry functionality. The synthetic controller and TUI
-do not yet inject these contracts into live model turns, execute model-authored finance
-calls, validate their evidence IDs against a source ledger, or journal their runtime
-results. The presence of a tool in the catalog is therefore not a claim of end-to-end
-agent wiring.
+The fixed-DAG runtime now injects task-scoped contracts into model requests, parses
+model-authored action envelopes, preflights a complete call batch, executes accepted
+calls through a scoped registry, and journals proposed/resolved arguments and exact
+result envelopes. A task's bounded `EvidencePacket` supplies the observation records
+and controller-owned source allowlist.
 
-The scoped executor can check IDs against a caller-supplied allowed set, but the
-controller does not yet derive that set from a ledger or perform per-fact source
-resolution.
+For normalized finance tasks, the model refers to observation IDs. The controller owns
+fact resolution, compatibility checks, source IDs, and context fields, so a model cannot
+replace a packet value with its own number. This binding is implemented for arithmetic,
+metrics, growth forecasts, DCF, and market statistics. Ranking remains available as a
+deterministic registry tool, but normalized fixed-DAG calls to `finance.rank` fail
+closed until trusted task-output row binding exists.
 
 ## Compact catalog
 
@@ -85,9 +88,12 @@ map is:
 | `risk` | `finance.metrics`, `finance.forecast_growth`, `finance.discounted_cash_flow`, `finance.rank` |
 | `lead` | `finance.rank` |
 
-The registry can expose only the selected public contracts and a scoped executor rejects
-out-of-scope calls. The static mapping and enforcement mechanism are present; selecting
-the role and inserting its contracts into an actual model turn remains controller work.
+The registry exposes only selected public contracts and a scoped executor rejects
+out-of-scope calls. A `TaskDefinition.allowed_tools` tuple is the authoritative
+fixed-DAG allowlist inserted into a model turn. The role map above is a reusable policy
+default, not authority inferred from a model-provided role. Role policies that include
+`finance.rank` still require a trusted non-observation row-binding path before that
+tool can run inside the normalized fixed-DAG runtime.
 
 ## Input, output, and evidence lineage
 
@@ -105,14 +111,15 @@ fields are:
 On success, the registry returns a `ToolResult` with the original `call_id`, a compact
 `payload`, and the supplied `source_ids` copied unchanged into the result's lineage
 field. The calculator never invents evidence IDs. `context` is echoed in calculation
-data so a downstream explanation can retain unit and period scope. This is
-calculation-level lineage: per-fact source resolution and checking that IDs exist are
-responsibilities of the future evidence ledger and runtime validator.
+data so a downstream explanation can retain unit and period scope.
 
-A scoped executor may also receive a controller-owned set of allowed source IDs and
-reject a call whose IDs fall outside that set with `source_not_allowed`. This enforces
-membership in a supplied trust set; it does not yet resolve opaque IDs to durable source
-records or prove that every numerical input cited the correct record.
+In normalized fixed-DAG execution, `ObservationLedger` creates a self-contained
+`EvidencePacket`. The controller resolves each proposed observation reference, derives
+the exact source IDs from that observation, and injects context from its unit and period.
+Unknown observations, incompatible entity/currency/scale combinations, model-supplied
+controller fields, and citations outside the derived allowlist are rejected. Manual
+opaque source IDs are disabled by default; the explicit compatibility flag
+`allow_unverified_sources=True` is required to use them.
 
 The success payload has the common outer shape
 `{"ok": true, "tool": "...", "data": {...}}`. Invalid inputs, unknown or disallowed
@@ -122,8 +129,9 @@ to a 256 KB maximum.
 
 Within one registry instance, replaying the same `call_id`, tool name, and arguments
 returns the cached result. Reusing that ID with different content returns
-`call_id_conflict`. This provides execution idempotency, but the cache is not yet a
-durable journal.
+`call_id_conflict`. This provides execution idempotency. Separately, fixed-DAG
+lifecycle events durably journal the complete result envelope and its canonical hash;
+journal replay projects those recorded events and never re-executes the tool.
 
 ## Financial conventions
 
@@ -239,7 +247,8 @@ the math.
 
 ## One action/result example
 
-This call asks the tool to calculate two facts from the same normalized evidence:
+This direct registry call asks the tool to calculate two facts whose lineage has already
+been resolved by a trusted caller:
 
 ```json
 {"name":"finance.calculate","call_id":"calc-17","arguments":{"operations":[{"id":"revenue_growth","operation":"percent_change","current":125,"prior":100},{"id":"margin_move","operation":"basis_point_change","current":0.24,"prior":0.20}],"source_ids":["sec:issuer:FY2025:revenue","sec:issuer:FY2024:revenue"],"context":{"current_period":"FY2025","prior_period":"FY2024","period_type":"year"},"precision":4}}
@@ -253,7 +262,9 @@ The deterministic result is equivalent to:
 
 The agent's job is to explain that revenue grew 25% and the selected margin expanded
 400 basis points, while retaining the evidence IDs and period scope. It should not
-recalculate either value in prose.
+recalculate either value in prose. In normalized fixed-DAG mode, the model instead
+proposes `{"observation_id":"..."}` references for `current` and `prior`; the
+controller produces the numeric call above and records both forms.
 
 ## Why this pattern fits Qwen3.5 0.8B
 
@@ -270,17 +281,16 @@ discounting out of the LLM while preserving the small amount of judgment it shou
 which facts are comparable, which scenario assumptions are defensible, which ranking
 direction matters, and what the result means.
 
-## Next slice — not implemented here
+## Next slices
 
-1. **Normalization and evidence ledger:** map SEC and market-provider facts into canonical
-   names, signs, currencies, scales, fiscal periods, and as-of times; resolve every input
-   to durable source/evidence records instead of accepting opaque IDs alone.
+1. **Trusted ranking inputs:** bind `finance.rank` rows to normalized task outputs or
+   controller-built records instead of accepting model-authored row values.
 2. **Sensitivity, IRR, and XIRR:** add bounded one- and two-dimensional sensitivity
    tables, deterministic scenario grids, periodic IRR, date-aware XIRR, explicit day-count
    conventions, root-selection rules, and convergence/error metadata.
 3. **Statement bridges:** add audited income-statement, balance-sheet, and cash-flow
    bridges, including EBITDA-to-NOPAT-to-unlevered-FCF, working-capital changes,
    enterprise-to-equity adjustments, and diluted-share roll-forwards.
-4. **Runtime journaling:** wire role-scoped contracts and execution into the controller's
-   model action loop; persist calls, result hashes, source IDs, contract/formula versions,
-   errors, timing, and replay decisions in the append-only run journal.
+4. **Production execution controls:** add global workflow time/cost budgets, task and
+   provider timeouts, durable tool-idempotency state, concurrent fixed-DAG scheduling,
+   and the supervised KernelCubed model adapter.

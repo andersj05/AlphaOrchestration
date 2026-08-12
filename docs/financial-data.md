@@ -110,19 +110,39 @@ no-event placeholders and are omitted; zero volume remains valid. Non-finite or
 domain-invalid cells become issues. If duplicate rows provide the same canonical
 field and timestamp, the later row wins and a duplicate issue is recorded.
 
-## Feeding deterministic calculations
+## Observation ledger and evidence packets
 
-The later observation ledger should resolve `FinancialObservation.evidence_ids`
-to exact `EvidenceRecord` values, derive a controller-owned allowed evidence set,
-and pass those IDs to a scoped finance-tool executor. The calculation input uses
-`FinancialObservation.value`; currency, scale, period labels, entity, ticker, and
-as-of fields come from its unit/period metadata. Only observations with compatible
-currency, scale, and periods should be combined.
+`ObservationLedger` atomically ingests one or more normalized batches. Re-ingesting
+an identical stable ID is idempotent; reusing an evidence or observation ID for
+different immutable content raises `LedgerCollisionError` before any part of the
+batch is added. Exact entity/name and entity/name/period selectors retain complete
+unit, period, provider metadata, and evidence references.
 
-Normalization does not compute totals, averages, TTM series, FX conversion,
-market returns, or financial ratios. Those operations belong in deterministic
-tools and should create separately journaled derived records with all input
-evidence IDs.
+`ObservationLedger.evidence_packet(...)` resolves selected observations and every
+referenced `EvidenceRecord` into a deterministic, self-contained `EvidencePacket`.
+It raises rather than silently truncating when the requested observation, evidence,
+or encoded-byte bound is exceeded. A packet's sorted evidence IDs are the
+controller-owned source allowlist for that task.
+
+`FixedDagRuntime` accepts packets through `evidence_packets_by_task`. For normalized
+finance calls, the model proposes observation references, not copied provider numbers.
+The controller resolves the values, rejects observations outside the packet or
+incompatible entities/currencies/scales, injects unit/period/as-of context and exact
+source IDs, validates the resolved arguments against the trusted tool schema, and only
+then executes the call. Every call in a multi-call action is preflighted before any tool
+runs. Manual opaque source IDs are rejected by default and require an explicit
+`allow_unverified_sources=True` compatibility opt-in.
+
+This binding path covers `finance.calculate`, `finance.metrics`,
+`finance.forecast_growth`, `finance.discounted_cash_flow`, and
+`finance.market_statistics`. `finance.rank` fails closed with
+`binding_not_supported` until trusted task-output row binding is implemented.
+
+Normalization itself still does not compute totals, averages, TTM series, FX
+conversion, market returns, or financial ratios. Deterministic tools own those
+operations; journal events retain proposed/resolved arguments, evidence lineage, and
+the returned result envelope. SEC and yfinance fetches remain explicit adapter calls:
+building or executing an evidence-bound finance task never performs a provider request.
 
 ## Verification harness
 
@@ -134,7 +154,12 @@ The focused tests cover:
   capex sign normalization, malformed values, and issue bounding;
 - yfinance snapshot/history fields, timezone handling, corporate actions,
   adjustment metadata, duplicate rows, missing currency, non-finite values, and
-  deterministic output.
+  deterministic output;
+- ledger idempotency, atomic collision rejection, deterministic selection and
+  serialization, packet completeness, hard limits, and offline adapter re-exports; and
+- controller-owned observation binding, fabricated/untrusted-reference rejection,
+  compatibility checks, and source-lineage journaling.
 
-All mapper fixtures are offline provider-shaped dictionaries. Tests never depend
-on live SEC or Yahoo availability.
+All mapper fixtures are offline provider-shaped dictionaries. Tests and the fixed-DAG
+harness never depend on live SEC or Yahoo availability. See
+[Testing harness](testing-harness.md) for exact commands.

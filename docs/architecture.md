@@ -51,9 +51,12 @@ normalize universe
                    human review
 ```
 
-The model does not author this graph. Issuer branches can run concurrently, but each
-task has fixed dependencies and bounds. Failed branches may produce an explicitly
-partial report; they cannot silently disappear.
+The model does not author this graph. Every task has a controller-owned identity,
+dependency list, tool allowlist, output schema, turn/tool/token/byte budgets, and bounded
+repair policy. The current `FixedDagRuntime` executes a stable topological order
+serially and journals `actual_active_slots: 1`. The graph contract retains an
+`active_slots` capacity for a later concurrent scheduler. Failed dependencies either
+skip dependents or propagate explicit degraded ancestry; they cannot silently disappear.
 
 ## Small-model action loop
 
@@ -82,21 +85,40 @@ Initial policy:
 Constrained decoding belongs in the engine adapter when supported. Alpha should not
 import vLLM directly to bypass KernelCubed's runtime boundary.
 
-## State and replay
+## State, journaling, and replay
 
-The controller assigns schema version, run ID, global sequence, and timestamp to every
-event. The JSONL journal is the source of truth; `RunState` is a projection. Sequence
-gaps, unknown schema versions, mismatched run IDs, and events after terminal state are
-audit failures.
+The controller alone assigns schema version, run ID, global sequence, and timestamp to
+each event. It reduces an event before appending it, so an invalid draft cannot corrupt
+the journal. The JSONL journal is the source of truth and `RunState` is a projection.
+Sequence gaps, unknown schema versions, mismatched run IDs, invalid lifecycle
+transitions, and events after terminal state are replay failures.
+
+A fixed-DAG journal records the exact canonical workflow plan and hash, model requests
+and request hashes, bounded generation traces and hashes, proposed and controller-bound
+tool arguments and hashes, and complete tool-result envelopes and hashes. Loading a
+journal rejects duplicate JSON keys, non-finite JSON constants, hash mismatches, plan or
+workflow identity mismatches, and inconsistent duplicated envelope fields. Existing
+non-fixed-DAG synthetic journals remain readable where lifecycle integrity envelopes do
+not apply.
+
+Generation traces carry bounded prompt/output token IDs, finish reason, sampling
+controls, request/session IDs, telemetry, and model/tokenizer fingerprints. These
+records make execution auditable and deterministic state replay possible; replay does
+not rerun a model, tool, or provider call. Exact inference reproduction still depends on
+the future KernelCubed adapter and its engine-level telemetry.
 
 The first schema keeps UI-relevant evidence inline. Full filings and large tool payloads
 should later live in a content-addressed artifact store, referenced by hash and stable
 source ID from the journal.
 
-Durable generation traces should include exact prompt/output token IDs and hashes,
-finish reason, sampling controls, request/session IDs, queue state, timings, model and
-tokenizer fingerprints, and batch/concurrency context. Decoded text is not an exact
-replay identity.
+## Operational debugger
+
+The TUI keeps a screen-owned copy of the complete event stream for inspection, separate
+from the reducer's bounded recent-event projection. The Debug / Journal tab supports
+event-family, agent, unassigned-controller, and free-text filtering; follow-tail
+navigation; aggregate tool/rejection/failure counters; exact JSON for the selected
+record; and a per-agent transcript. This is a diagnostic view over in-process events,
+not an editor for the append-only journal.
 
 ## Evidence and candidate policy
 
@@ -124,7 +146,7 @@ Phase 1 uses:
 
 - SEC submissions for issuer metadata and filing history;
 - SEC company facts for standardized XBRL facts;
-- SEC filing documents/sections when the source ledger and artifact cache land;
+- SEC filing documents/sections when the content-addressed artifact cache lands;
 - yfinance for basic dated price history, profiles, and corporate-action context;
 - deterministic calculators for ratios, growth, scenarios, and unit-safe transformations.
 
@@ -138,13 +160,17 @@ reviewed before use beyond personal research.
 
 ## Build sequence
 
-1. **Current:** event core, deterministic demo, TUI, replay, adapter seams.
-2. Add source/evidence ledgers, content-addressed artifacts, and read-only tool registry.
-3. Implement SEC/yfinance tools plus deterministic calculators and cache/rate policies.
-4. Add fixed task DAG, budgets, partial completion, and typed retry/overload handling.
-5. Add constrained action/final schemas, dynamic evidence allowlists, and held-out evals.
-6. Wire KernelCubed behind a supervised engine process and preserve its exact telemetry.
-7. Add forecasts, scenarios, deeper-work routing, report export, and thesis monitoring.
+1. **Implemented:** event core, deterministic demo, append-only journals, replay, TUI,
+   strict action/final envelopes, read-only tool registry, and finance calculators.
+2. **Implemented:** normalized SEC/yfinance observations, evidence records, observation
+   ledger/packets, fixed-DAG execution, observation-bound finance calls, lifecycle
+   hashes, replay-integrity checks, and the Debug / Journal tab.
+3. Add content-addressed filing artifacts, provider cache/queue policy, normalized
+   task-output row binding for `finance.rank`, and a concurrent fixed-DAG scheduler.
+4. Wire KernelCubed behind a supervised engine process and preserve its exact telemetry,
+   cancellation, overload, and timeout behavior.
+5. Add sensitivity/IRR tools, audited statement bridges, deeper-work routing, report
+   export, thesis monitoring, and held-out model/tool-policy evaluations.
 
 Capability evaluation and serving/load evaluation remain separate gates. Human review
 remains mandatory throughout the research prototype.
