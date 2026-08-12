@@ -261,3 +261,106 @@ Footer {
     dock: bottom;
 }
 
+
+#run-tabs {
+    height: 1fr;
+    margin: 0 2 1 2;
+}
+
+#run-tabs ContentSwitcher {
+    height: 1fr;
+}
+
+#run-tabs TabPane {
+    height: 1fr;
+    padding: 0;
+}
+
+#run-tabs Tabs {
+    height: 3;
+}
+
+#run-tabs Underline > .underline--bar {
+    color: $alpha-accent;
+}
+
+#run-tabs #main-grid {
+    padding: 0;
+}
+
+#debug-shell {
+    height: 100%;
+}
+
+#debug-controls {
+    height: 4;
+    padding: 0 1;
+    background: $alpha-panel;
+    border-bottom: solid $alpha-border;
+}
+
+#debug-kind-filter {
+    width: 20;
+    margin-right: 1;
+}
+
+#debug-agent-filter {
+    width: 26;
+    margin-right: 1;
+}
+
+#debug-search {
+    width: 1fr;
+    margin-right: 1;
+}
+
+#debug-follow {
+    width: 20;
+    height: 3;
+    padding: 1 0 0 1;
+}
+
+#debug-counters {
+    height: 2;
+    padding: 0 2;
+    background: $alpha-panel-raised;
+    color: $alpha-muted;
+    content-align: left middle;
+}
+
+#debug-grid {
+    height: 1fr;
+}
+
+#debug-events-pane {
+    width: 3fr;
+    min-width: 48;
+    margin-right: 1;
+}
+
+#debug-inspector-pane {
+    width: 2fr;
+    min-width: 36;
+}
+
+#debug-event-table {
+    height: 1fr;
+}
+
+#debug-detail-scroll {
+    height: 3fr;
+    padding: 0 1 1 1;
+    background: $alpha-background;
+    border: solid $alpha-border;
+}
+
+#debug-transcript-scroll {
+    height: 2fr;
+    padding: 0 1 1 1;
+    background: $alpha-background;
+    border: solid $alpha-border;
+}
+
+#debug-detail, #debug-transcript {
+    height: auto;
+}

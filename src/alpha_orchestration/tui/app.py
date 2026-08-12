@@ -15,6 +15,7 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import (
     Button,
+    Checkbox,
     DataTable,
     Footer,
     Input,
@@ -23,6 +24,8 @@ from textual.widgets import (
     RichLog,
     Select,
     Static,
+    TabbedContent,
+    TabPane,
 )
 
 from alpha_orchestration.adapters.demo import DemoRuntime
@@ -42,6 +45,20 @@ from alpha_orchestration.domain import (
 )
 from alpha_orchestration.journal import JsonlJournal
 from alpha_orchestration.ports import EventJournal, OrchestratorRuntime
+from alpha_orchestration.tui.debug import (
+    ALL_EVENTS,
+    EVENT_FAMILIES,
+    UNASSIGNED_AGENT,
+    EventQuery,
+    available_agents,
+    count_events,
+    event_row,
+    filter_events,
+    follow_row_index,
+    format_agent_transcript,
+    format_counters,
+    format_event_detail,
+)
 
 JournalFactory = Callable[[RunSpec], EventJournal]
 RuntimeFactory = Callable[[RunSpec], OrchestratorRuntime]
@@ -91,6 +108,7 @@ class HelpScreen(ModalScreen[None]):
             yield Static("ALPHA / CONTROLS", id="help-title")
             yield Static(
                 "[b]Space[/b]  Pause or resume the event stream\n"
+                "[b]D / O[/b]  Open debug journal / overview\n"
                 "[b]Enter[/b]  Inspect the selected candidate\n"
                 "[b]C[/b]      Cancel and drain the run\n"
                 "[b]R[/b]      Restart with the same mandate\n"
@@ -196,6 +214,8 @@ class RunScreen(Screen[None]):
         Binding("c", "cancel_run", "Cancel"),
         Binding("r", "restart_run", "Restart"),
         Binding("n", "new_run", "New run"),
+        Binding("d", "show_debug", "Debug"),
+        Binding("o", "show_overview", "Overview", show=False),
         Binding("question_mark", "show_help", "Help"),
         Binding("q", "quit_app", "Quit"),
     ]
@@ -211,6 +231,11 @@ class RunScreen(Screen[None]):
         self.controller = RunController(spec, runtime, journal, subscribers=[self._on_event])
         self.completed = asyncio.Event()
         self._selected_candidate_id: str | None = None
+        self._events: list[RunEvent] = []
+        self._debug_selected_sequence: int | None = None
+        self._debug_agents: tuple[str, ...] = ()
+        self._debug_ready = False
+        self._debug_rendering = False
 
     def compose(self) -> ComposeResult:
         yield Static("", id="top-banner", markup=True)
@@ -221,27 +246,56 @@ class RunScreen(Screen[None]):
             yield Static("[dim]EVIDENCE[/dim]\n[b]0[/b]", id="metric-evidence", classes="metric")
             yield Static("[dim]CANDIDATES[/dim]\n[b]0[/b]", id="metric-candidates", classes="metric")
             yield Static("[dim]ENGINE SHAPE[/dim]\n[b]8 → 4[/b]", id="metric-engine", classes="metric")
-        with Horizontal(id="main-grid"):
-            with Vertical(id="left-pane", classes="panel"):
-                yield Static("PIPELINE", classes="section-title")
-                yield Static("", id="pipeline", markup=True)
-                yield Static("AGENT ROSTER", classes="section-title")
-                yield DataTable(id="agent-table")
-            with Vertical(id="center-pane", classes="panel"):
-                yield Static("LIVE ACTIVITY", classes="section-title")
-                yield RichLog(id="activity-log", markup=True, wrap=True, highlight=False)
-                yield Static("EVIDENCE LEDGER", classes="section-title")
-                yield DataTable(id="evidence-table")
-            with Vertical(id="right-pane", classes="panel"):
-                yield Static("RESEARCH-PRIORITY FUNNEL", classes="section-title")
-                yield DataTable(id="candidate-table")
-                yield Static("SELECTED CANDIDATE", classes="section-title")
-                with VerticalScroll(id="candidate-scroll"):
-                    yield Static(
-                        "[dim]Candidates will appear after evidence has been challenged.[/dim]",
-                        id="candidate-detail",
-                        markup=True,
+        with TabbedContent(id="run-tabs"):
+            with TabPane("OVERVIEW", id="overview-tab"), Horizontal(id="main-grid"):
+                with Vertical(id="left-pane", classes="panel"):
+                    yield Static("PIPELINE", classes="section-title")
+                    yield Static("", id="pipeline", markup=True)
+                    yield Static("AGENT ROSTER", classes="section-title")
+                    yield DataTable(id="agent-table")
+                with Vertical(id="center-pane", classes="panel"):
+                    yield Static("LIVE ACTIVITY", classes="section-title")
+                    yield RichLog(id="activity-log", markup=True, wrap=True, highlight=False)
+                    yield Static("EVIDENCE LEDGER", classes="section-title")
+                    yield DataTable(id="evidence-table")
+                with Vertical(id="right-pane", classes="panel"):
+                    yield Static("RESEARCH-PRIORITY FUNNEL", classes="section-title")
+                    yield DataTable(id="candidate-table")
+                    yield Static("SELECTED CANDIDATE", classes="section-title")
+                    with VerticalScroll(id="candidate-scroll"):
+                        yield Static(
+                            "[dim]Candidates will appear after evidence has been challenged.[/dim]",
+                            id="candidate-detail",
+                            markup=True,
+                        )
+            with TabPane("DEBUG / JOURNAL", id="debug-tab"), Vertical(id="debug-shell"):
+                with Horizontal(id="debug-controls"):
+                    yield Select(
+                        [(family.upper(), family) for family in EVENT_FAMILIES],
+                        value=ALL_EVENTS,
+                        allow_blank=False,
+                        id="debug-kind-filter",
                     )
+                    yield Select(
+                        [("ALL AGENTS", ALL_EVENTS), ("UNASSIGNED", UNASSIGNED_AGENT)],
+                        value=ALL_EVENTS,
+                        allow_blank=False,
+                        id="debug-agent-filter",
+                    )
+                    yield Input(placeholder="Search message, payload, ID?", id="debug-search")
+                    yield Checkbox("FOLLOW TAIL", value=True, id="debug-follow")
+                yield Static("", id="debug-counters", markup=False)
+                with Horizontal(id="debug-grid"):
+                    with Vertical(id="debug-events-pane", classes="panel"):
+                        yield Static("EVENT STREAM", classes="section-title")
+                        yield DataTable(id="debug-event-table")
+                    with Vertical(id="debug-inspector-pane", classes="panel"):
+                        yield Static("EXACT JOURNAL RECORD", classes="section-title")
+                        with VerticalScroll(id="debug-detail-scroll"):
+                            yield Static("", id="debug-detail", markup=False)
+                        yield Static("AGENT TRANSCRIPT", classes="section-title")
+                        with VerticalScroll(id="debug-transcript-scroll"):
+                            yield Static("", id="debug-transcript", markup=False)
         yield Static(
             "TRIAGE ONLY  ·  SYNTHETIC FIXTURES  ·  HUMAN REVIEW REQUIRED BEFORE ANY ACTION",
             id="safety-bar",
@@ -264,7 +318,14 @@ class RunScreen(Screen[None]):
         candidate_table.cursor_type = "row"
         candidate_table.zebra_stripes = True
 
+        debug_table = self.query_one("#debug-event-table", DataTable)
+        debug_table.add_columns("SEQ", "TIME (UTC)", "KIND", "AGENT", "SUMMARY")
+        debug_table.cursor_type = "row"
+        debug_table.zebra_stripes = True
+        self._debug_ready = True
+
         self._render_state(self.controller.state)
+        self._render_debug()
         self.run_worker(self._drive(), name=f"run:{self.spec.run_id}", exclusive=True)
 
     async def _drive(self) -> None:
@@ -277,6 +338,7 @@ class RunScreen(Screen[None]):
         await self.controller.cancel()
 
     def _on_event(self, event: RunEvent) -> None:
+        self._events.append(event)
         color = EVENT_COLORS.get(event.kind, "#8293A7")
         agent = f"  [#54D6FF]{escape(event.agent_id)}[/#54D6FF]" if event.agent_id else ""
         line = Text.from_markup(
@@ -285,6 +347,97 @@ class RunScreen(Screen[None]):
         )
         self.query_one("#activity-log", RichLog).write(line)
         self._render_state(self.controller.state)
+        self._render_debug()
+
+    @property
+    def debug_events(self) -> tuple[RunEvent, ...]:
+        """Return the full screen-owned stream, including events older than state history."""
+
+        return tuple(self._events)
+
+    def _debug_query(self) -> EventQuery:
+        family = self.query_one("#debug-kind-filter", Select).value
+        agent_id = self.query_one("#debug-agent-filter", Select).value
+        return EventQuery(
+            family=ALL_EVENTS if family is Select.BLANK else str(family),
+            agent_id=ALL_EVENTS if agent_id is Select.BLANK else str(agent_id),
+            search=self.query_one("#debug-search", Input).value,
+        )
+
+    def _sync_debug_agent_options(self) -> None:
+        agents = available_agents(self._events)
+        if agents == self._debug_agents:
+            return
+        select = self.query_one("#debug-agent-filter", Select)
+        current = select.value
+        select.set_options(
+            [("ALL AGENTS", ALL_EVENTS), ("UNASSIGNED", UNASSIGNED_AGENT)]
+            + [(agent_id, agent_id) for agent_id in agents]
+        )
+        if current == UNASSIGNED_AGENT or current in agents:
+            select.value = current
+        else:
+            select.value = ALL_EVENTS
+        self._debug_agents = agents
+
+    def _render_debug(self) -> None:
+        if not self._debug_ready or self._debug_rendering:
+            return
+        self._debug_rendering = True
+        try:
+            self._sync_debug_agent_options()
+            visible = filter_events(self._events, self._debug_query())
+            current_index = next(
+                (index for index, event in enumerate(visible) if event.sequence == self._debug_selected_sequence),
+                None,
+            )
+            target_index = follow_row_index(
+                enabled=self.query_one("#debug-follow", Checkbox).value,
+                current=current_index,
+                row_count=len(visible),
+            )
+            table = self.query_one("#debug-event-table", DataTable)
+            table.clear(columns=False)
+            for event in visible:
+                table.add_row(*event_row(event), key=str(event.sequence))
+
+            counters = count_events(self._events, visible)
+            self.query_one("#debug-counters", Static).update(Text(format_counters(counters), style="bold #8293A7"))
+            if target_index is None:
+                self._render_debug_selection(None)
+                return
+            table.move_cursor(row=target_index, column=0, animate=False)
+            self._render_debug_selection(visible[target_index])
+        finally:
+            self._debug_rendering = False
+
+    def _render_debug_selection(self, event: RunEvent | None) -> None:
+        self._debug_selected_sequence = None if event is None else event.sequence
+        self.query_one("#debug-detail", Static).update(format_event_detail(event))
+        self.query_one("#debug-transcript", Static).update(format_agent_transcript(self._events, event))
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id in {"debug-kind-filter", "debug-agent-filter"}:
+            self._render_debug()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "debug-search":
+            self._render_debug()
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id == "debug-follow":
+            self._render_debug()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table.id != "debug-event-table":
+            return
+        try:
+            sequence = int(str(event.row_key.value))
+        except (TypeError, ValueError):
+            return
+        selected = next((item for item in self._events if item.sequence == sequence), None)
+        if selected is not None:
+            self._render_debug_selection(selected)
 
     def _render_state(self, state: RunState) -> None:
         status_color = {
@@ -389,13 +542,23 @@ class RunScreen(Screen[None]):
         )
 
     def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.data_table.id != "candidate-table":
+        if event.data_table.id == "debug-event-table":
+            try:
+                sequence = int(str(event.row_key.value))
+            except (TypeError, ValueError):
+                return
+            selected = next((item for item in self._events if item.sequence == sequence), None)
+            if selected is not None:
+                self._debug_selected_sequence = sequence
+                self.query_one("#debug-follow", Checkbox).value = False
+                self._render_debug_selection(selected)
             return
-        candidate_id = str(event.row_key.value)
-        candidate = self.controller.state.candidates.get(candidate_id)
-        if candidate is not None:
-            self._selected_candidate_id = candidate_id
-            self._render_candidate_detail(candidate)
+        if event.data_table.id == "candidate-table":
+            candidate_id = str(event.row_key.value)
+            candidate = self.controller.state.candidates.get(candidate_id)
+            if candidate is not None:
+                self._selected_candidate_id = candidate_id
+                self._render_candidate_detail(candidate)
 
     async def action_toggle_pause(self) -> None:
         if self.controller.state.status is RunStatus.PAUSED:
@@ -416,6 +579,12 @@ class RunScreen(Screen[None]):
 
     def action_show_help(self) -> None:
         self.app.push_screen(HelpScreen())
+
+    def action_show_debug(self) -> None:
+        self.query_one("#run-tabs", TabbedContent).active = "debug-tab"
+
+    def action_show_overview(self) -> None:
+        self.query_one("#run-tabs", TabbedContent).active = "overview-tab"
 
     def action_quit_app(self) -> None:
         self.app.exit()
