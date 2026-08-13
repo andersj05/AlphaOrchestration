@@ -147,6 +147,8 @@ def test_debug_tab_retains_full_stream_and_exercises_filters_and_detail() -> Non
             await pilot.pause()
 
             tabs = screen.query_one("#run-tabs", TabbedContent)
+            assert tabs.active == "results-tab"
+            screen.action_show_overview()
             assert tabs.active == "overview-tab"
             screen.action_show_debug()
             await pilot.pause()

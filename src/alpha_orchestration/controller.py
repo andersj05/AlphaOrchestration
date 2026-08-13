@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
+from contextlib import aclosing
 from typing import Final
 
 from alpha_orchestration.domain import EventKind, RunEvent, RunSpec, RunState, RunStatus, utc_now
@@ -87,11 +88,12 @@ class RunController:
                     f"Admitted {self.spec.agent_budget} logical agents over {self.spec.active_slots} active slots",
                 )
             )
-            async for draft in self.runtime.stream(self.spec):
-                await self._gate.wait()
-                if self._cancel_requested:
-                    break
-                await self._publish(draft)
+            async with aclosing(self.runtime.stream(self.spec)) as drafts:
+                async for draft in drafts:
+                    await self._gate.wait()
+                    if self._cancel_requested:
+                        break
+                    await self._publish(draft)
             if not self.state.terminal and not self._cancel_requested:
                 await self._publish(
                     EventDraft(

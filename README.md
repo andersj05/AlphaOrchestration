@@ -17,13 +17,15 @@ The current slice includes:
   repair, dependency/partial-result policy, and exact lifecycle journaling;
 - replay-time integrity checks for workflow plans, model requests/traces, tool arguments,
   and tool results; and
-- an Overview tab plus a full-stream Debug / Journal tab for inspecting agent messages,
-  tool calls, rejections, failures, and exact event JSON.
+- Overview, Results, and full-stream Debug / Journal tabs for inspecting ranked research
+  candidates, agent messages, tool calls, rejections, failures, and exact event JSON.
 
-The fixed-DAG executor is deliberately serial in this slice and reports
-`actual_active_slots: 1`, even when a workflow declares more capacity. SEC and
-yfinance calls are explicit adapter operations: tests and the DAG harness are offline,
-and no provider fetch occurs implicitly during tool execution.
+The fixed-DAG executor enforces controller-owned slot bounds and dependency ordering.
+The offline harness measures three issuer branches overlapping in three active slots,
+then runs a validator fan-in and projects a typed, source-backed ranked-results artifact
+before workflow completion. That trusted projector is a deterministic prototype fixture,
+not yet the production bridge to live SEC/yfinance collection. Provider calls remain
+explicit adapter operations; no provider fetch occurs implicitly during tool execution.
 
 ## Quick start
 
@@ -33,8 +35,7 @@ From WSL:
 cd /home/base/AlphaOrchestration
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest
-.venv/bin/ruff check .
+.venv/bin/python scripts/verify.py
 ```
 
 Launch the synthetic TUI and open the debugger with `D`:
@@ -43,7 +44,7 @@ Launch the synthetic TUI and open the debugger with `D`:
 .venv/bin/python -m alpha_orchestration --demo
 ```
 
-Run the deterministic fixed-DAG execution/replay harness:
+Run only the deterministic fixed-DAG execution/replay fixture:
 
 ```bash
 .venv/bin/python scripts/run_dag_harness.py

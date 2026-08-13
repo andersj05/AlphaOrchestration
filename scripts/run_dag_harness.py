@@ -1,4 +1,4 @@
-"""Run and replay a deterministic offline fixed-DAG fixture."""
+"""Run and replay the deterministic multi-issuer offline DAG fixture."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from alpha_orchestration.data.observations import (
 from alpha_orchestration.domain import JsonValue, RunSpec
 from alpha_orchestration.fixed_dag import FixedDagRuntime
 from alpha_orchestration.journal import JsonlJournal, replay
+from alpha_orchestration.offline_harness import run_harness as run_multi_issuer_harness
 from alpha_orchestration.ports import ActionModelRequest, ActionModelResult
 from alpha_orchestration.tools.finance import build_financial_tool_registry
 
@@ -260,11 +261,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.output is not None:
-        summary = asyncio.run(run_harness(args.output))
+        summary = asyncio.run(run_multi_issuer_harness(args.output))
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
     with tempfile.TemporaryDirectory(prefix="alpha-dag-harness-") as directory:
-        summary = asyncio.run(run_harness(Path(directory) / "events.jsonl"))
+        summary = asyncio.run(run_multi_issuer_harness(Path(directory) / "events.jsonl"))
         summary["journal"] = "temporary (removed after verification)"
         print(json.dumps(summary, indent=2, sort_keys=True))
     return 0

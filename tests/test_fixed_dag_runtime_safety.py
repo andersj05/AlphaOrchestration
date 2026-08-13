@@ -505,7 +505,9 @@ def test_workflow_plan_event_hashes_exact_nested_plan_and_reports_real_concurren
     assert planned["plan_hash"] == expected_hash == workflow.plan_hash
     assert planned["effective_active_slots"] == 3
     assert planned["active_slots"] == 3
-    assert planned["actual_active_slots"] == 1
+    assert planned["actual_active_slots"] is None
+    completed = events_of(journal, EventKind.WORKFLOW_COMPLETED)[0].payload
+    assert completed["observed_peak_active_tasks"] == 1
 
 
 def test_optional_failure_completes_run_but_marks_workflow_partial() -> None:
@@ -550,3 +552,332 @@ def test_huge_integer_final_action_is_rejected_without_escaping_lifecycle() -> N
     assert rejection["code"] == "invalid_json"
     assert rejection["repair_allowed"] is False
     assert len(events_of(journal, EventKind.TASK_FAILED)) == 1
+
+
+class BarrierModel:
+    def __init__(
+        self,
+        *,
+        expected_parallel: int,
+        release: asyncio.Event,
+        entered: asyncio.Event,
+    ) -> None:
+        self.expected_parallel = expected_parallel
+        self.release = release
+        self.entered = entered
+        self.active = 0
+        self.peak = 0
+        self.started: list[str] = []
+
+    async def complete(self, request: ActionModelRequest) -> ActionModelResult:
+        self.started.append(request.task_id)
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        if self.active >= self.expected_parallel:
+            self.entered.set()
+        try:
+            await self.release.wait()
+            return valid_result(request, final({}))
+        finally:
+            self.active -= 1
+
+
+def scheduler_workflow(
+    tasks: tuple[TaskDefinition, ...],
+    *,
+    active_slots: int,
+) -> WorkflowDefinition:
+    return WorkflowDefinition(
+        "concurrent-runtime",
+        "1.0.0",
+        tasks,
+        active_slots=active_slots,
+    )
+
+
+def empty_task(
+    task_id: str,
+    agent_id: str,
+    *,
+    depends_on: tuple[str, ...] = (),
+) -> TaskDefinition:
+    return TaskDefinition(
+        task_id,
+        agent_id,
+        depends_on=depends_on,
+        output_schema=EMPTY_SCHEMA,
+        max_turns=1,
+        repair_budget=0,
+    )
+
+
+def test_scheduler_overlaps_independent_agents_and_reports_peak() -> None:
+    async def run() -> tuple[RunStatus, MemoryJournal, BarrierModel]:
+        release = asyncio.Event()
+        entered = asyncio.Event()
+        model = BarrierModel(expected_parallel=2, release=release, entered=entered)
+        journal = MemoryJournal()
+        workflow = scheduler_workflow(
+            (
+                empty_task("left", "agent-left"),
+                empty_task("right", "agent-right"),
+            ),
+            active_slots=2,
+        )
+        controller = RunController(
+            RunSpec(
+                run_id="run-concurrency-overlap",
+                mode="fixed_fixture",
+                agent_budget=2,
+                active_slots=2,
+            ),
+            FixedDagRuntime(workflow, model, build_financial_tool_registry()),
+            journal,
+        )
+        await controller.start()
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert model.peak == 2
+        release.set()
+        state = await asyncio.wait_for(controller.wait(), timeout=1)
+        return state.status, journal, model
+
+    status, journal, model = asyncio.run(run())
+
+    assert status is RunStatus.COMPLETE
+    assert model.peak == 2
+    summary = events_of(journal, EventKind.WORKFLOW_COMPLETED)[0].payload
+    assert summary["observed_peak_active_tasks"] == 2
+
+
+def test_scheduler_respects_slot_limit_and_dependency_terminal_barrier() -> None:
+    async def run() -> tuple[MemoryJournal, BarrierModel]:
+        release = asyncio.Event()
+        entered = asyncio.Event()
+        model = BarrierModel(expected_parallel=2, release=release, entered=entered)
+        journal = MemoryJournal()
+        workflow = scheduler_workflow(
+            (
+                empty_task("left", "agent-left"),
+                empty_task("right", "agent-right"),
+                empty_task("after-left", "agent-after", depends_on=("left",)),
+            ),
+            active_slots=2,
+        )
+        controller = RunController(
+            RunSpec(
+                run_id="run-concurrency-barrier",
+                mode="fixed_fixture",
+                agent_budget=3,
+                active_slots=2,
+            ),
+            FixedDagRuntime(workflow, model, build_financial_tool_registry()),
+            journal,
+        )
+        await controller.start()
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert model.peak == 2
+        assert "after-left" not in model.started
+        release.set()
+        await asyncio.wait_for(controller.wait(), timeout=1)
+        return journal, model
+
+    journal, model = asyncio.run(run())
+
+    assert model.peak == 2
+    terminal_left = next(
+        event.sequence
+        for event in journal.events
+        if event.kind is EventKind.TASK_COMPLETED
+        and event.payload["task_id"] == "left"
+    )
+    started_after = next(
+        event.sequence
+        for event in journal.events
+        if event.kind is EventKind.TASK_STARTED
+        and event.payload["task_id"] == "after-left"
+    )
+    assert terminal_left < started_after
+
+
+def test_scheduler_keeps_one_active_task_per_agent() -> None:
+    async def run() -> BarrierModel:
+        release = asyncio.Event()
+        entered = asyncio.Event()
+        model = BarrierModel(expected_parallel=1, release=release, entered=entered)
+        workflow = scheduler_workflow(
+            (
+                empty_task("first", "shared-agent"),
+                empty_task("second", "shared-agent"),
+            ),
+            active_slots=2,
+        )
+        controller = RunController(
+            RunSpec(
+                run_id="run-one-task-per-agent",
+                mode="fixed_fixture",
+                agent_budget=2,
+                active_slots=2,
+            ),
+            FixedDagRuntime(workflow, model, build_financial_tool_registry()),
+            MemoryJournal(),
+        )
+        await controller.start()
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert model.started == ["first"]
+        release.set()
+        await asyncio.wait_for(controller.wait(), timeout=1)
+        return model
+
+    model = asyncio.run(run())
+
+    assert model.started == ["first", "second"]
+    assert model.peak == 1
+
+
+def test_concurrent_journal_replays_with_contiguous_sequences(tmp_path: Path) -> None:
+    async def run(path: Path):
+        release = asyncio.Event()
+        release.set()
+        entered = asyncio.Event()
+        model = BarrierModel(expected_parallel=2, release=release, entered=entered)
+        workflow = scheduler_workflow(
+            (
+                empty_task("left", "agent-left"),
+                empty_task("right", "agent-right"),
+            ),
+            active_slots=2,
+        )
+        controller = RunController(
+            RunSpec(
+                run_id="run-concurrent-replay",
+                mode="fixed_fixture",
+                agent_budget=2,
+                active_slots=2,
+            ),
+            FixedDagRuntime(workflow, model, build_financial_tool_registry()),
+            JsonlJournal(path),
+        )
+        return await controller.run()
+
+    path = tmp_path / "concurrent-events.jsonl"
+    original = asyncio.run(run(path))
+    loaded = load_events(path)
+    restored = replay(path)
+
+    assert [event.sequence for event in loaded] == list(range(len(loaded)))
+    assert restored.status == original.status
+    assert restored.tasks == original.tasks
+    assert restored.last_sequence == original.last_sequence
+
+
+def test_scheduler_enforces_global_slot_limit() -> None:
+    async def run() -> BarrierModel:
+        release = asyncio.Event()
+        entered = asyncio.Event()
+        model = BarrierModel(expected_parallel=2, release=release, entered=entered)
+        workflow = scheduler_workflow(
+            (
+                empty_task("first", "agent-first"),
+                empty_task("second", "agent-second"),
+                empty_task("third", "agent-third"),
+            ),
+            active_slots=3,
+        )
+        controller = RunController(
+            RunSpec(
+                run_id="run-global-slot-limit",
+                mode="fixed_fixture",
+                agent_budget=3,
+                active_slots=2,
+            ),
+            FixedDagRuntime(workflow, model, build_financial_tool_registry()),
+            MemoryJournal(),
+        )
+        await controller.start()
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert model.started == ["first", "second"]
+        release.set()
+        await asyncio.wait_for(controller.wait(), timeout=1)
+        return model
+
+    model = asyncio.run(run())
+
+    assert model.started == ["first", "second", "third"]
+    assert model.peak == 2
+
+
+def test_scheduler_is_serial_when_effective_slot_count_is_one() -> None:
+    async def run() -> tuple[BarrierModel, MemoryJournal]:
+        release = asyncio.Event()
+        entered = asyncio.Event()
+        model = BarrierModel(expected_parallel=1, release=release, entered=entered)
+        journal = MemoryJournal()
+        workflow = scheduler_workflow(
+            (
+                empty_task("first", "agent-first"),
+                empty_task("second", "agent-second"),
+            ),
+            active_slots=2,
+        )
+        controller = RunController(
+            RunSpec(
+                run_id="run-serial-slot",
+                mode="fixed_fixture",
+                agent_budget=2,
+                active_slots=1,
+            ),
+            FixedDagRuntime(workflow, model, build_financial_tool_registry()),
+            journal,
+        )
+        await controller.start()
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        assert model.started == ["first"]
+        release.set()
+        await asyncio.wait_for(controller.wait(), timeout=1)
+        return model, journal
+
+    model, journal = asyncio.run(run())
+
+    assert model.started == ["first", "second"]
+    assert model.peak == 1
+    summary = events_of(journal, EventKind.WORKFLOW_COMPLETED)[0].payload
+    assert summary["observed_peak_active_tasks"] == 1
+
+
+def test_cancel_closes_scheduler_and_drains_active_workers() -> None:
+    async def run() -> tuple[RunStatus, int, list[str]]:
+        release = asyncio.Event()
+        entered = asyncio.Event()
+        model = BarrierModel(expected_parallel=2, release=release, entered=entered)
+        workflow = scheduler_workflow(
+            (
+                empty_task("left", "agent-left"),
+                empty_task("right", "agent-right"),
+            ),
+            active_slots=2,
+        )
+        controller = RunController(
+            RunSpec(
+                run_id="run-cancellation-cleanup",
+                mode="fixed_fixture",
+                agent_budget=2,
+                active_slots=2,
+            ),
+            FixedDagRuntime(workflow, model, build_financial_tool_registry()),
+            MemoryJournal(),
+        )
+        await controller.start()
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        await asyncio.wait_for(controller.cancel(), timeout=1)
+        leaked = [
+            task.get_name()
+            for task in asyncio.all_tasks()
+            if task.get_name().startswith("alpha:run-cancellation-cleanup")
+        ]
+        return controller.state.status, model.active, leaked
+
+    status, active, leaked = asyncio.run(run())
+
+    assert status is RunStatus.CANCELLED
+    assert active == 0
+    assert leaked == []

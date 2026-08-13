@@ -35,6 +35,7 @@ from alpha_orchestration.domain import (
     AgentStatus,
     Candidate,
     CandidateBucket,
+    CandidateFinancial,
     EventKind,
     ResearchDepth,
     RunEvent,
@@ -100,6 +101,21 @@ EVENT_COLORS = {
 }
 
 
+def _financial_value(financial: CandidateFinancial) -> str:
+    unit = financial.unit.casefold()
+    if unit == "ratio":
+        return f"{financial.value * 100:.1f}%"
+    if unit == "x":
+        return f"{financial.value:.1f}x"
+    if unit == "usd millions":
+        return f"${financial.value:,.0f}m"
+    return f"{financial.value:g} {financial.unit}"
+
+
+def _readable_token(value: str) -> str:
+    return value.replace("_", " ").upper()
+
+
 class HelpScreen(ModalScreen[None]):
     BINDINGS = [Binding("escape", "dismiss", "Close", show=False)]
 
@@ -108,14 +124,15 @@ class HelpScreen(ModalScreen[None]):
             yield Static("ALPHA / CONTROLS", id="help-title")
             yield Static(
                 "[b]Space[/b]  Pause or resume the event stream\n"
-                "[b]D / O[/b]  Open debug journal / overview\n"
+                "[b]O / V / D[/b]  Overview / results / debug journal\n"
                 "[b]Enter[/b]  Inspect the selected candidate\n"
                 "[b]C[/b]      Cancel and drain the run\n"
                 "[b]R[/b]      Restart with the same mandate\n"
                 "[b]N[/b]      Create a new mandate\n"
                 "[b]Q[/b]      Quit\n\n"
-                "The demo is synthetic, offline, and produces research-priority "
-                "candidates—not investment recommendations.",
+                "Results rank the next diligence step, not expected return. The demo "
+                "uses offline synthetic fixtures, has no live-source readiness, and "
+                "does not issue investment recommendations.",
                 markup=True,
             )
             yield Button("CLOSE", id="close-help", variant="primary")
@@ -142,7 +159,7 @@ class MissionScreen(Screen[None]):
                 id="mission-kicker",
             )
             yield Static(
-                "[b]Deploy a bounded research swarm.[/b]\n"
+                "[b]Run a bounded research workflow.[/b]\n"
                 "Map a sector, collect evidence, challenge the screen, and hand "
                 "a small candidate funnel to a human analyst.",
                 id="mission-copy",
@@ -162,12 +179,12 @@ class MissionScreen(Screen[None]):
                     yield Label("UNIVERSE SIZE", classes="field-label")
                     yield Input(value="18", id="universe-input")
             with Horizontal(id="mission-stats"):
-                yield Static("[dim]LOGICAL AGENTS[/dim]\n[b]8[/b]", classes="mission-stat")
-                yield Static("[dim]ACTIVE SLOTS[/dim]\n[b]4[/b]", classes="mission-stat")
+                yield Static("[dim]RESEARCH ROLES[/dim]\n[b]8[/b]", classes="mission-stat")
+                yield Static("[dim]SLOT LIMIT[/dim]\n[b]4 MAX[/b]", classes="mission-stat")
                 yield Static("[dim]DATA MODE[/dim]\n[b]OFFLINE[/b]", classes="mission-stat")
             yield Static(
-                "[b #E3B341]SYNTHETIC DEMO[/b #E3B341]  No network, credentials, "
-                "or real-company claims. Live SEC + market-data execution is the next adapter step.",
+                "[b #E3B341]SYNTHETIC REPLAY[/b #E3B341]  No live sources or model "
+                "execution. The slot limit is configuration, not measured concurrency.",
                 id="demo-notice",
                 markup=True,
             )
@@ -216,6 +233,7 @@ class RunScreen(Screen[None]):
         Binding("n", "new_run", "New run"),
         Binding("d", "show_debug", "Debug"),
         Binding("o", "show_overview", "Overview", show=False),
+        Binding("v", "show_results", "Results"),
         Binding("question_mark", "show_help", "Help"),
         Binding("q", "quit_app", "Quit"),
     ]
@@ -236,6 +254,7 @@ class RunScreen(Screen[None]):
         self._debug_agents: tuple[str, ...] = ()
         self._debug_ready = False
         self._debug_rendering = False
+        self._last_rendered_status: RunStatus | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="top-banner", markup=True)
@@ -245,7 +264,7 @@ class RunScreen(Screen[None]):
             yield Static("[dim]AGENTS[/dim]\n[b]0 / 8[/b]", id="metric-agents", classes="metric")
             yield Static("[dim]EVIDENCE[/dim]\n[b]0[/b]", id="metric-evidence", classes="metric")
             yield Static("[dim]CANDIDATES[/dim]\n[b]0[/b]", id="metric-candidates", classes="metric")
-            yield Static("[dim]ENGINE SHAPE[/dim]\n[b]8 → 4[/b]", id="metric-engine", classes="metric")
+            yield Static("[dim]EXECUTION[/dim]\n[b]NOT STARTED[/b]", id="metric-engine", classes="metric")
         with TabbedContent(id="run-tabs"):
             with TabPane("OVERVIEW", id="overview-tab"), Horizontal(id="main-grid"):
                 with Vertical(id="left-pane", classes="panel"):
@@ -268,6 +287,34 @@ class RunScreen(Screen[None]):
                             id="candidate-detail",
                             markup=True,
                         )
+            with TabPane("RESULTS", id="results-tab"), Vertical(id="results-shell"):
+                yield Static(
+                    "[b #7AA2F7]PREPARING BOUNDED RUN[/b #7AA2F7]  No candidate ranking is available yet.",
+                    id="results-status",
+                    markup=True,
+                )
+                with Horizontal(id="results-summary"):
+                    yield Static("", id="result-coverage", classes="result-stat")
+                    yield Static("", id="result-surfaced", classes="result-stat")
+                    yield Static("", id="result-evidence", classes="result-stat")
+                    yield Static("", id="result-quality", classes="result-stat")
+                    yield Static("", id="result-sources", classes="result-stat")
+                with Horizontal(id="results-grid"):
+                    with Vertical(id="results-list-pane", classes="panel"):
+                        yield Static("RANKED RESEARCH CANDIDATES", classes="section-title")
+                        yield Static(
+                            "Priority ranks the next diligence step—not expected return.",
+                            id="results-ranking-note",
+                        )
+                        yield DataTable(id="results-table")
+                    with Vertical(id="results-detail-pane", classes="panel"):
+                        yield Static("CANDIDATE RESEARCH BRIEF", classes="section-title")
+                        with VerticalScroll(id="results-detail-scroll"):
+                            yield Static(
+                                "[dim]Results will appear as candidates are synthesized.[/dim]",
+                                id="results-detail",
+                                markup=True,
+                            )
             with TabPane("DEBUG / JOURNAL", id="debug-tab"), Vertical(id="debug-shell"):
                 with Horizontal(id="debug-controls"):
                     yield Select(
@@ -323,6 +370,10 @@ class RunScreen(Screen[None]):
         debug_table.cursor_type = "row"
         debug_table.zebra_stripes = True
         self._debug_ready = True
+        results_table = self.query_one("#results-table", DataTable)
+        results_table.add_columns("#", "TICKER", "PRIORITY", "TRIAGE", "CONF.")
+        results_table.cursor_type = "row"
+        results_table.zebra_stripes = True
 
         self._render_state(self.controller.state)
         self._render_debug()
@@ -429,6 +480,14 @@ class RunScreen(Screen[None]):
             self._render_debug()
 
     def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table.id == "results-table":
+            candidate_id = str(event.row_key.value)
+            candidate = self.controller.state.candidates.get(candidate_id)
+            if candidate is not None:
+                self._selected_candidate_id = candidate_id
+                self._render_result_detail(self.controller.state, candidate)
+                self._render_candidate_detail(candidate)
+            return
         if event.data_table.id != "debug-event-table":
             return
         try:
@@ -440,6 +499,7 @@ class RunScreen(Screen[None]):
             self._render_debug_selection(selected)
 
     def _render_state(self, state: RunState) -> None:
+        previous_status = self._last_rendered_status
         status_color = {
             RunStatus.IDLE: "#8293A7",
             RunStatus.PLANNING: "#7AA2F7",
@@ -450,8 +510,9 @@ class RunScreen(Screen[None]):
             RunStatus.CANCELLED: "#8293A7",
             RunStatus.FAILED: "#FF6B6B",
         }[state.status]
+        mode_label = _readable_token(state.spec.mode)
         self.query_one("#top-banner", Static).update(
-            f"[b]ALPHA / ORCHESTRATION[/b]   [#E3B341]SYNTHETIC DEMO[/#E3B341]   "
+            f"[b]ALPHA / ORCHESTRATION[/b]   [#E3B341]{escape(mode_label)}[/#E3B341]   "
             f"[b]{escape(state.spec.sector.upper())}[/b]   "
             f"[{status_color}]● {state.status.value.upper()}[/{status_color}]   "
             f"[dim]{escape(state.spec.run_id)}[/dim]"
@@ -463,13 +524,273 @@ class RunScreen(Screen[None]):
         )
         self.query_one("#metric-evidence", Static).update(f"[dim]EVIDENCE[/dim]\n[b]{len(state.evidence)}[/b]")
         self.query_one("#metric-candidates", Static).update(f"[dim]CANDIDATES[/dim]\n[b]{len(state.candidates)}[/b]")
-        self.query_one("#metric-engine", Static).update(
-            f"[dim]LOGICAL → ACTIVE[/dim]\n[b]{state.spec.agent_budget} → {state.spec.active_slots}[/b]"
-        )
+        self.query_one("#metric-engine", Static).update(self._execution_metric(state))
         self._render_pipeline(state)
         self._render_agents(state)
         self._render_evidence(state)
         self._render_candidates(state)
+        self._render_results(state)
+        self._render_safety_bar(state)
+        tabs = self.query_one("#run-tabs", TabbedContent)
+        terminal_statuses = {RunStatus.COMPLETE, RunStatus.CANCELLED, RunStatus.FAILED}
+        if (
+            state.status in terminal_statuses
+            and previous_status not in terminal_statuses
+            and tabs.active == "overview-tab"
+        ):
+            tabs.active = "results-tab"
+        self._last_rendered_status = state.status
+
+    def _execution_metric(self, state: RunState) -> str:
+        completed = next(
+            (event for event in reversed(self._events) if event.kind is EventKind.WORKFLOW_COMPLETED),
+            None,
+        )
+        planned = next(
+            (event for event in reversed(self._events) if event.kind is EventKind.WORKFLOW_PLANNED),
+            None,
+        )
+        limit = state.spec.active_slots
+        if planned is not None:
+            raw_limit = planned.payload.get("effective_active_slots")
+            if isinstance(raw_limit, int) and not isinstance(raw_limit, bool):
+                limit = raw_limit
+        if completed is not None:
+            peak = completed.payload.get("observed_peak_active_tasks")
+            if isinstance(peak, int) and not isinstance(peak, bool):
+                return f"[dim]OBSERVED PEAK / LIMIT[/dim]\n[b]{peak} / {limit}[/b]"
+        if planned is not None:
+            actual = planned.payload.get("actual_active_slots")
+            if isinstance(actual, int) and not isinstance(actual, bool):
+                return f"[dim]ACTUAL / SLOT LIMIT[/dim]\n[b]{actual} / {limit}[/b]"
+            peak_label = "PENDING" if not state.terminal else "NOT REPORTED"
+            return f"[dim]OBSERVED PEAK / LIMIT[/dim]\n[b]{peak_label} / {limit}[/b]"
+        if state.spec.mode == "synthetic_demo":
+            return "[dim]EXECUTION[/dim]\n[b]SERIAL FIXTURE[/b]"
+        return f"[dim]SLOT LIMIT[/dim]\n[b]≤ {state.spec.active_slots} · ACTUAL N/R[/b]"
+
+    def _synthetic_posture(self, state: RunState) -> bool:
+        return (bool(state.evidence) and all(evidence.synthetic for evidence in state.evidence.values())) or (
+            not state.evidence and state.spec.mode == "synthetic_demo"
+        )
+
+    def _render_safety_bar(self, state: RunState) -> None:
+        if self._synthetic_posture(state):
+            posture = "SYNTHETIC FIXTURES · NO LIVE-SOURCE READINESS"
+        elif any(evidence.synthetic for evidence in state.evidence.values()):
+            posture = "MIXED SOURCES · VERIFY AS-OF + PROVENANCE"
+        else:
+            posture = "VERIFY SOURCE READINESS + AS-OF"
+        self.query_one("#safety-bar", Static).update(
+            f"TRIAGE ONLY  ·  {posture}  ·  HUMAN REVIEW REQUIRED BEFORE ANY ACTION"
+        )
+
+    def _reviewed_issuers(self) -> int | None:
+        for event in reversed(self._events):
+            raw_value = event.payload.get("reviewed_issuers")
+            if raw_value is None and event.payload.get("tool") == "demo.universe_map":
+                raw_value = event.payload.get("rows")
+            if isinstance(raw_value, int) and not isinstance(raw_value, bool) and raw_value >= 0:
+                return raw_value
+        return None
+
+    def _render_results(self, state: RunState) -> None:
+        ranked = sorted(
+            state.candidates.values(),
+            key=lambda candidate: candidate.priority_score,
+            reverse=True,
+        )
+        table = self.query_one("#results-table", DataTable)
+        table.clear(columns=False)
+        for rank, candidate in enumerate(ranked, start=1):
+            label, color = BUCKET_STYLES[candidate.bucket]
+            table.add_row(
+                str(rank),
+                Text(candidate.ticker, style="bold #D7E3EE"),
+                f"{candidate.priority_score} / 100",
+                Text(label, style=color),
+                _readable_token(candidate.confidence.value),
+                key=candidate.candidate_id,
+            )
+
+        if ranked and self._selected_candidate_id not in state.candidates:
+            self._selected_candidate_id = ranked[0].candidate_id
+        selected = state.candidates.get(self._selected_candidate_id or "")
+        if selected is not None:
+            selected_index = next(
+                index for index, candidate in enumerate(ranked) if candidate.candidate_id == selected.candidate_id
+            )
+            table.move_cursor(row=selected_index, column=0, animate=False)
+            self._render_result_detail(state, selected)
+        else:
+            self.query_one("#results-detail", Static).update(self._empty_results_markup(state))
+
+        reviewed = self._reviewed_issuers()
+        if reviewed is not None:
+            coverage_value = f"{reviewed} / {state.spec.universe_size}"
+        elif state.status in {RunStatus.IDLE, RunStatus.PLANNING}:
+            coverage_value = f"PENDING / {state.spec.universe_size}"
+        elif state.status in {RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.SYNTHESIZING}:
+            coverage_value = f"IN PROGRESS / {state.spec.universe_size}"
+        elif state.status in {RunStatus.CANCELLED, RunStatus.FAILED}:
+            coverage_value = f"PARTIAL / {state.spec.universe_size}"
+        else:
+            coverage_value = f"N/R / {state.spec.universe_size}"
+        self.query_one("#result-coverage", Static).update(f"[dim]REVIEWED / REQUESTED[/dim]\n[b]{coverage_value}[/b]")
+        self.query_one("#result-surfaced", Static).update(f"[dim]CANDIDATES SURFACED[/dim]\n[b]{len(ranked)}[/b]")
+        candidates_with_gaps = sum(bool(candidate.evidence_gaps) for candidate in ranked)
+        self.query_one("#result-evidence", Static).update(
+            f"[dim]EVIDENCE / OPEN GAPS[/dim]\n[b]{len(state.evidence)} records · {candidates_with_gaps} names[/b]"
+        )
+        quality_flags = sum(
+            candidate.data_quality.value in {"limited", "partial", "not_assessed"} for candidate in ranked
+        )
+        self.query_one("#result-quality", Static).update(
+            f"[dim]DATA-QUALITY FLAGS[/dim]\n[b]{quality_flags} / {len(ranked)}[/b]"
+        )
+        if self._synthetic_posture(state):
+            source_value = "OFFLINE FIXTURE · NO LIVE READINESS"
+        elif any(evidence.synthetic for evidence in state.evidence.values()):
+            source_value = "MIXED SOURCES · VERIFY AS-OF"
+        else:
+            source_value = f"{_readable_token(state.spec.mode)} · VERIFY READINESS"
+        self.query_one("#result-sources", Static).update(f"[dim]SOURCE POSTURE[/dim]\n[b]{escape(source_value)}[/b]")
+        self.query_one("#results-status", Static).update(self._results_status_markup(state, reviewed, len(ranked)))
+
+    def _results_status_markup(
+        self,
+        state: RunState,
+        reviewed: int | None,
+        candidate_count: int,
+    ) -> str:
+        if reviewed is None:
+            coverage = f"review count not reported; {state.spec.universe_size} requested"
+        else:
+            coverage = f"{reviewed} of {state.spec.universe_size} reviewed"
+        if state.status is RunStatus.COMPLETE:
+            if candidate_count:
+                headline = (
+                    f"[b #7EE787]BOUNDED RUN COMPLETE[/b #7EE787]  {coverage}; "
+                    f"{candidate_count} research candidates surfaced."
+                )
+            else:
+                headline = (
+                    f"[b #E3B341]NO CANDIDATES SURFACED[/b #E3B341]  {coverage}; none met this run's triage criteria."
+                )
+            return (
+                f"{headline}\n[dim]This is a research-priority screen—not an investment "
+                "recommendation or a conclusion about the whole market.[/dim]"
+            )
+        if state.status is RunStatus.FAILED:
+            prefix = "PARTIAL RESULTS · " if candidate_count else ""
+            failure = escape((state.failure or "Unspecified runtime failure")[:140])
+            return (
+                f"[b #FF6B6B]{prefix}RUN FAILED[/b #FF6B6B]  {failure}\n"
+                "[dim]Coverage is incomplete. Preserve artifacts for diagnosis; do not use "
+                "the current ranking as a completed screen.[/dim]"
+            )
+        if state.status is RunStatus.CANCELLED:
+            prefix = "PARTIAL RESULTS · " if candidate_count else ""
+            return (
+                f"[b #E3B341]{prefix}RUN CANCELLED[/b #E3B341]  Work stopped before "
+                "the bounded mandate completed.\n[dim]Any surfaced candidates are provisional "
+                "and require a new or resumed run.[/dim]"
+            )
+        if state.status is RunStatus.PAUSED:
+            return (
+                "[b #E3B341]RESEARCH PAUSED[/b #E3B341]  Results are provisional and may "
+                "change after the event stream resumes."
+            )
+        if state.status is RunStatus.SYNTHESIZING:
+            return (
+                "[b #C099FF]SYNTHESIZING CANDIDATES[/b #C099FF]  Reconciling evidence, "
+                "objections, quality flags, and next diligence steps."
+            )
+        if state.status is RunStatus.RUNNING:
+            return (
+                "[b #54D6FF]RESEARCH IN PROGRESS[/b #54D6FF]  The bounded universe is still "
+                "being reviewed; rankings are not final."
+            )
+        return "[b #7AA2F7]PREPARING BOUNDED RUN[/b #7AA2F7]  No candidate ranking is available yet."
+
+    def _empty_results_markup(self, state: RunState) -> str:
+        if state.status is RunStatus.COMPLETE:
+            return (
+                "[b #E3B341]No research candidate met this run's triage criteria.[/b #E3B341]\n\n"
+                "Review the mandate, exclusions, and evidence coverage before changing the "
+                "screen. This is not evidence that the sector or wider market has no opportunities."
+            )
+        if state.status is RunStatus.FAILED:
+            return (
+                "[b #FF6B6B]No candidate brief is available.[/b #FF6B6B]\n\n"
+                "The run failed before a candidate could be synthesized. Inspect Debug / Journal."
+            )
+        if state.status is RunStatus.CANCELLED:
+            return (
+                "[b #E3B341]No candidate brief is available.[/b #E3B341]\n\n"
+                "The run was cancelled before synthesis completed."
+            )
+        return "[dim]Results will appear as candidates are synthesized.[/dim]"
+
+    def _render_result_detail(self, state: RunState, candidate: Candidate) -> None:
+        label, color = BUCKET_STYLES[candidate.bucket]
+        financial_lines = "\n\n".join(
+            f"• [b]{escape(financial.label)}[/b]  {_financial_value(financial)}  "
+            f"[dim]{escape(financial.period)}[/dim]\n"
+            f"  [dim]Sources: {escape(', '.join(financial.source_ids) or 'not provided')}[/dim]"
+            for financial in candidate.financials
+        )
+        if not financial_lines:
+            financial_lines = "[dim]No typed financial snapshot was supplied by this run.[/dim]"
+
+        evidence_lines: list[str] = []
+        for evidence_id in candidate.evidence_ids:
+            evidence = state.evidence.get(evidence_id)
+            if evidence is None:
+                evidence_lines.append(f"• [#E3B341]{escape(evidence_id)} — record unavailable[/#E3B341]")
+            else:
+                evidence_lines.append(
+                    f"• {escape(evidence.title)} — [dim]{escape(evidence.source)} · {escape(evidence_id)}[/dim]"
+                )
+        if not evidence_lines:
+            evidence_lines.append("[dim]No evidence records were linked.[/dim]")
+        gap_lines = (
+            "\n".join(f"• {escape(gap)}" for gap in candidate.evidence_gaps)
+            or "[dim]No explicit gaps were supplied; treat absence as not assessed.[/dim]"
+        )
+        evidence_text = "\n".join(evidence_lines)
+        next_workflow = candidate.next_workflow.replace("_", " ").title()
+        if candidate.source_mode.value == "synthetic":
+            source_caveat = "Synthetic fixtures make no real-company claim and have no live-source readiness."
+        elif candidate.source_mode.value == "live":
+            source_caveat = "Verify every cited live source, as-of date, and calculation before action."
+        elif candidate.source_mode.value == "mixed":
+            source_caveat = "Mixed-source result: reconcile synthetic and live evidence before action."
+        else:
+            source_caveat = "Source posture was not supplied; verify provenance and as-of before action."
+        self.query_one("#results-detail", Static).update(
+            f"[b #D7E3EE]{escape(candidate.ticker)} · {escape(candidate.company)}[/b #D7E3EE]\n"
+            f"[dim]PRIORITY {candidate.priority_score} / 100 · RESEARCH URGENCY ONLY[/dim]\n"
+            f"[{color}]TRIAGE | {escape(label.upper())}[/{color}]\n"
+            f"[b #E3B341]NOT AN INVESTMENT RECOMMENDATION[/b #E3B341]\n\n"
+            f"[b]CONFIDENCE[/b]  {_readable_token(candidate.confidence.value)}    "
+            f"[b]DATA QUALITY[/b]  {_readable_token(candidate.data_quality.value)}\n"
+            f"[b]AS OF[/b]  {escape(candidate.as_of)}    "
+            f"[b]SOURCE MODE[/b]  {_readable_token(candidate.source_mode.value)}\n\n"
+            f"[b #54D6FF]WHY IT SURFACED · VARIANT WEDGE[/b #54D6FF]\n"
+            f"{escape(candidate.variant_wedge)}\n\n"
+            f"[b #54D6FF]WHY NOW[/b #54D6FF]\n{escape(candidate.why_now)}\n\n"
+            f"[b]KEY FINANCIAL SNAPSHOT[/b]\n{financial_lines}\n\n"
+            f"[b #E3B341]FIRST REJECTION / DOWNSIDE MECHANISM[/b #E3B341]\n"
+            f"{escape(candidate.first_rejection)}\n\n"
+            f"[b]WHAT WOULD MAKE IT INVESTABLE[/b]\n{escape(candidate.investable_if)}\n\n"
+            f"[b #FF6B6B]KILL TEST[/b #FF6B6B]\n{escape(candidate.kill_if)}\n\n"
+            f"[b]EVIDENCE USED[/b]\n{evidence_text}\n\n"
+            f"[b #E3B341]OPEN EVIDENCE GAPS[/b #E3B341]\n{gap_lines}\n\n"
+            f"[b]NEXT DILIGENCE[/b]  {escape(next_workflow)}\n\n"
+            f"[dim]{escape(label)} is a triage label. "
+            f"{escape(source_caveat)}[/dim]"
+        )
 
     def _render_pipeline(self, state: RunState) -> None:
         lines: list[str] = []
@@ -492,6 +813,7 @@ class RunScreen(Screen[None]):
                 Text(symbol, style=color),
                 agent.role,
                 Text(label, style=color),
+                agent.current_task,
                 key=agent.agent_id,
             )
 
@@ -553,12 +875,14 @@ class RunScreen(Screen[None]):
                 self.query_one("#debug-follow", Checkbox).value = False
                 self._render_debug_selection(selected)
             return
-        if event.data_table.id == "candidate-table":
+        if event.data_table.id in {"candidate-table", "results-table"}:
             candidate_id = str(event.row_key.value)
             candidate = self.controller.state.candidates.get(candidate_id)
             if candidate is not None:
                 self._selected_candidate_id = candidate_id
                 self._render_candidate_detail(candidate)
+
+                self._render_result_detail(self.controller.state, candidate)
 
     async def action_toggle_pause(self) -> None:
         if self.controller.state.status is RunStatus.PAUSED:
@@ -585,6 +909,9 @@ class RunScreen(Screen[None]):
 
     def action_show_overview(self) -> None:
         self.query_one("#run-tabs", TabbedContent).active = "overview-tab"
+
+    def action_show_results(self) -> None:
+        self.query_one("#run-tabs", TabbedContent).active = "results-tab"
 
     def action_quit_app(self) -> None:
         self.app.exit()

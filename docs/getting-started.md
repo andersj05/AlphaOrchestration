@@ -3,10 +3,11 @@
 The current milestone has two offline entry points:
 
 - the synthetic terminal application, which exercises the event reducer, journal, replay,
-  Overview tab, and Debug / Journal tab; and
-- a deterministic fixed-DAG harness, which exercises strict model actions, normalized
-  evidence binding, a finance tool call, lifecycle hashes, journal persistence, and
-  replay equivalence without KernelCubed or network access.
+  Overview, Results, and Debug / Journal tabs; and
+- a deterministic fixed-DAG harness, which exercises three parallel issuer branches,
+  normalized evidence binding, deterministic finance metrics and ranking, a validator
+  fan-in, typed candidate projection, lifecycle hashes, journal persistence, and replay
+  equivalence without KernelCubed or network access.
 
 ## Install
 
@@ -57,26 +58,34 @@ agents, tool calls, rejections, and failures.
 
 ## Run the fixed-DAG harness
 
-Execute a two-turn offline fixture and immediately replay its journal:
+Execute the three-issuer fan-out plus validator fan-in fixture and replay its journal:
 
 ```bash
 .venv/bin/python scripts/run_dag_harness.py
 ```
 
 Without `--output`, the harness uses a temporary journal and removes it after verifying
-equivalent run status, workflow identity, task state, and final sequence. To retain a
-journal, provide a new path that does not already exist:
+equivalent run status, workflow identity, task/evidence/candidate state, controller-owned
+rank order, and final sequence. To retain a journal, provide a new path that does not
+exist:
 
 ```bash
 .venv/bin/python scripts/run_dag_harness.py \
   --output artifacts/runs/offline-dag/events.jsonl
 ```
 
-The harness prints a strict JSON summary with the run status, event count, model turns,
-task status, tool-call count, journal path, and `replay_equivalent` result. Its
-`EvidencePacket` is built from offline normalized observations and evidence; it does
-not fetch SEC or Yahoo data. The current fixed-DAG scheduler is serial and records
-`actual_active_slots: 1`.
+The harness prints a strict JSON summary including completed branches, slot limit,
+measured scheduler/model peaks, dependency-order status, candidate count and ranked IDs,
+source coverage, data-quality posture, results readiness, and replay equivalence. A
+successful current run proves three overlapping branch calls within a three-slot limit,
+three completed branches, and three candidates.
+
+Each branch binds offline normalized revenue and net-income observations to
+`finance.metrics`. After all three complete, the validator supplies research narratives
+but cannot alter controller-owned identities or ranks. Its per-issuer citation list must
+exactly match that issuer's evidence packet before projection into the typed candidate.
+This proves attribution, not semantic entailment. The harness-owned projector is the
+offline UI/replay prototype contract, not yet the live-provider production bridge.
 
 ## Artifacts, integrity, and replay
 
@@ -118,12 +127,17 @@ nor deterministic finance tools fetch provider data implicitly.
 
 ## Verify
 
-Run the complete offline suite and lint check:
+Run the complete deterministic offline gate:
 
 ```bash
-.venv/bin/pytest
-.venv/bin/ruff check .
+.venv/bin/python scripts/verify.py
 ```
+
+This one command runs Ruff lint, pytest with strict configuration and markers, the
+fixed-DAG execution/replay fixture, and lightweight installed-package and CLI smoke
+checks. It does not load `.env`, invoke a live provider, start KernelCubed, or require a
+GPU. Formatting remains a documented follow-up gate because the existing tree needs a
+separate one-time Ruff formatting cleanup.
 
 Run the major slices independently while developing:
 

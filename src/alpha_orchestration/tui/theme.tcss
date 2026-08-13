@@ -213,6 +213,71 @@ Button.-primary {
     color: $alpha-text;
 }
 
+#results-shell {
+    height: 100%;
+}
+
+#results-status {
+    height: 4;
+    padding: 1 2;
+    margin-bottom: 1;
+    background: $alpha-panel-raised;
+    border-left: thick $alpha-accent;
+    color: $alpha-text;
+}
+
+#results-summary {
+    height: 5;
+    margin-bottom: 1;
+}
+
+.result-stat {
+    width: 1fr;
+    height: 5;
+    padding: 1;
+    margin-right: 1;
+    background: $alpha-panel-raised;
+    border-left: thick $alpha-border;
+    color: $alpha-text;
+}
+
+#results-grid {
+    height: 1fr;
+}
+
+#results-list-pane {
+    width: 2fr;
+    min-width: 32;
+    margin-right: 1;
+}
+
+#results-detail-pane {
+    width: 3fr;
+    min-width: 42;
+}
+
+#results-ranking-note {
+    height: 3;
+    padding: 0 1 1 1;
+    color: $alpha-muted;
+}
+
+#results-table {
+    height: 1fr;
+}
+
+#results-detail-scroll {
+    height: 1fr;
+    padding: 0 1 1 1;
+    background: $alpha-background;
+    border: solid $alpha-border;
+}
+
+#results-detail {
+    height: auto;
+    color: $alpha-text;
+}
+
 DataTable {
     background: $alpha-panel;
     color: $alpha-text;

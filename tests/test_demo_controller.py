@@ -3,7 +3,15 @@ from pathlib import Path
 
 from alpha_orchestration.adapters.demo import DemoRuntime, build_demo_events
 from alpha_orchestration.controller import RunController
-from alpha_orchestration.domain import CandidateBucket, EventKind, RunSpec, RunStatus
+from alpha_orchestration.domain import (
+    CandidateBucket,
+    CandidateConfidence,
+    CandidateDataQuality,
+    CandidateSourceMode,
+    EventKind,
+    RunSpec,
+    RunStatus,
+)
 from alpha_orchestration.journal import JsonlJournal, MemoryJournal, replay
 from alpha_orchestration.ports import EventDraft
 
@@ -23,7 +31,15 @@ def test_demo_is_deterministic_and_finishes_as_triage() -> None:
     assert len(state.agents) == 8
     assert len(state.evidence) == 7
     assert len(state.candidates) == 3
-    assert state.candidates["demo:alpx"].bucket is CandidateBucket.ADVANCE
+    candidate = state.candidates["demo:alpx"]
+    assert candidate.bucket is CandidateBucket.ADVANCE
+    assert len(candidate.financials) == 4
+    assert candidate.confidence is CandidateConfidence.MEDIUM
+    assert candidate.data_quality is CandidateDataQuality.PARTIAL
+    assert candidate.source_mode is CandidateSourceMode.SYNTHETIC
+    assert candidate.evidence_gaps
+    financial_sources = {source_id for item in candidate.financials for source_id in item.source_ids}
+    assert financial_sources <= set(candidate.evidence_ids)
     assert "recommendation" in state.agents["lead"].current_task
     assert [item.sequence for item in journal.events] == list(range(len(journal.events)))
     assert len(build_demo_events(state.spec)) == len(build_demo_events(state.spec))

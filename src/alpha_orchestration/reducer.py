@@ -10,6 +10,10 @@ from alpha_orchestration.domain import (
     AgentStatus,
     Candidate,
     CandidateBucket,
+    CandidateConfidence,
+    CandidateDataQuality,
+    CandidateFinancial,
+    CandidateSourceMode,
     EventKind,
     Evidence,
     RunEvent,
@@ -60,6 +64,55 @@ def _nonempty_string(payload: dict[str, Any], key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise StateInvariantError(f"event payload {key!r} must be a non-empty string")
     return value.strip()
+
+
+def _optional_nonempty_string(payload: dict[str, Any], key: str, default: str) -> str:
+    if key not in payload:
+        return default
+    return _nonempty_string(payload, key)
+
+
+def _string_tuple(payload: dict[str, Any], key: str) -> tuple[str, ...]:
+    raw_values = payload.get(key, [])
+    if not isinstance(raw_values, list):
+        raise StateInvariantError(f"event payload {key!r} must be a list")
+    values: list[str] = []
+    for raw_value in raw_values:
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise StateInvariantError(
+                f"event payload {key!r} must contain non-empty strings"
+            )
+        values.append(raw_value.strip())
+    if len(values) != len(set(values)):
+        raise StateInvariantError(f"event payload {key!r} must contain unique values")
+    return tuple(values)
+
+
+def _candidate_financials(payload: dict[str, Any]) -> tuple[CandidateFinancial, ...]:
+    raw_financials = payload.get("financials", [])
+    if not isinstance(raw_financials, list):
+        raise StateInvariantError("candidate financials must be a list")
+    financials: list[CandidateFinancial] = []
+    for raw_financial in raw_financials:
+        if not isinstance(raw_financial, dict):
+            raise StateInvariantError("candidate financials must contain objects")
+        raw_value = _require(raw_financial, "value")
+        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+            raise StateInvariantError("candidate financial value must be numeric")
+        try:
+            financials.append(
+                CandidateFinancial(
+                    metric=_nonempty_string(raw_financial, "metric"),
+                    label=_nonempty_string(raw_financial, "label"),
+                    value=float(raw_value),
+                    unit=_nonempty_string(raw_financial, "unit"),
+                    period=_nonempty_string(raw_financial, "period"),
+                    source_ids=_string_tuple(raw_financial, "source_ids"),
+                )
+            )
+        except ValueError as exc:
+            raise StateInvariantError(str(exc)) from exc
+    return tuple(financials)
 
 
 def _task(state: RunState, event: RunEvent) -> TaskState:
@@ -474,20 +527,35 @@ def reduce_event(state: RunState, event: RunEvent) -> RunState:
         return replace(next_state, agents=agents)
 
     if event.kind is EventKind.CANDIDATE_UPDATED:
-        candidate = Candidate(
-            candidate_id=str(_require(payload, "candidate_id")),
-            ticker=str(_require(payload, "ticker")),
-            company=str(_require(payload, "company")),
-            bucket=CandidateBucket(str(_require(payload, "bucket"))),
-            priority_score=int(_require(payload, "priority_score")),
-            variant_wedge=str(_require(payload, "variant_wedge")),
-            why_now=str(_require(payload, "why_now")),
-            first_rejection=str(_require(payload, "first_rejection")),
-            investable_if=str(_require(payload, "investable_if")),
-            kill_if=str(_require(payload, "kill_if")),
-            next_workflow=str(_require(payload, "next_workflow")),
-            evidence_ids=tuple(str(value) for value in payload.get("evidence_ids", [])),
-        )
+        try:
+            candidate = Candidate(
+                candidate_id=_nonempty_string(payload, "candidate_id"),
+                ticker=_nonempty_string(payload, "ticker"),
+                company=_nonempty_string(payload, "company"),
+                bucket=CandidateBucket(_nonempty_string(payload, "bucket")),
+                priority_score=int(_require(payload, "priority_score")),
+                variant_wedge=_nonempty_string(payload, "variant_wedge"),
+                why_now=_nonempty_string(payload, "why_now"),
+                first_rejection=_nonempty_string(payload, "first_rejection"),
+                investable_if=_nonempty_string(payload, "investable_if"),
+                kill_if=_nonempty_string(payload, "kill_if"),
+                next_workflow=_nonempty_string(payload, "next_workflow"),
+                evidence_ids=_string_tuple(payload, "evidence_ids"),
+                financials=_candidate_financials(payload),
+                confidence=CandidateConfidence(
+                    str(payload.get("confidence", CandidateConfidence.NOT_ASSESSED.value))
+                ),
+                data_quality=CandidateDataQuality(
+                    str(payload.get("data_quality", CandidateDataQuality.NOT_ASSESSED.value))
+                ),
+                as_of=_optional_nonempty_string(payload, "as_of", "not provided"),
+                source_mode=CandidateSourceMode(
+                    str(payload.get("source_mode", CandidateSourceMode.UNSPECIFIED.value))
+                ),
+                evidence_gaps=_string_tuple(payload, "evidence_gaps"),
+            )
+        except (TypeError, ValueError) as exc:
+            raise StateInvariantError(f"invalid candidate payload: {exc}") from exc
         candidates = dict(state.candidates)
         candidates[candidate.candidate_id] = candidate
         return replace(next_state, candidates=candidates)

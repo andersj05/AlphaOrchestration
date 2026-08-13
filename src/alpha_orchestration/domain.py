@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from math import isfinite
 from typing import Any
 from uuid import uuid4
 
@@ -127,6 +128,55 @@ class CandidateBucket(StrEnum):
         }[self]
 
 
+class CandidateConfidence(StrEnum):
+    NOT_ASSESSED = "not_assessed"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class CandidateDataQuality(StrEnum):
+    NOT_ASSESSED = "not_assessed"
+    LIMITED = "limited"
+    PARTIAL = "partial"
+    COMPLETE = "complete"
+
+
+class CandidateSourceMode(StrEnum):
+    UNSPECIFIED = "unspecified"
+    SYNTHETIC = "synthetic"
+    LIVE = "live"
+    MIXED = "mixed"
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateFinancial:
+    """One dated, source-linked financial observation used in candidate triage."""
+
+    metric: str
+    label: str
+    value: float
+    unit: str
+    period: str
+    source_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name in ("metric", "label", "unit", "period"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"candidate financial {name} must not be empty")
+        if (
+            isinstance(self.value, bool)
+            or not isinstance(self.value, (int, float))
+            or not isfinite(self.value)
+        ):
+            raise ValueError("candidate financial value must be finite")
+        if any(not isinstance(source_id, str) or not source_id.strip() for source_id in self.source_ids):
+            raise ValueError("candidate financial source IDs must not be empty")
+        if len(self.source_ids) != len(set(self.source_ids)):
+            raise ValueError("candidate financial source IDs must be unique")
+
+
 @dataclass(frozen=True, slots=True)
 class RunSpec:
     """A bounded research mandate.
@@ -235,10 +285,43 @@ class Candidate:
     kill_if: str
     next_workflow: str
     evidence_ids: tuple[str, ...] = ()
+    financials: tuple[CandidateFinancial, ...] = ()
+    confidence: CandidateConfidence = CandidateConfidence.NOT_ASSESSED
+    data_quality: CandidateDataQuality = CandidateDataQuality.NOT_ASSESSED
+    as_of: str = "not provided"
+    source_mode: CandidateSourceMode = CandidateSourceMode.UNSPECIFIED
+    evidence_gaps: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        for name in (
+            "candidate_id",
+            "ticker",
+            "company",
+            "variant_wedge",
+            "why_now",
+            "first_rejection",
+            "investable_if",
+            "kill_if",
+            "next_workflow",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"candidate {name} must not be empty")
         if not 0 <= self.priority_score <= 100:
             raise ValueError("priority_score must be between 0 and 100")
+        if any(not isinstance(source_id, str) or not source_id.strip() for source_id in self.evidence_ids):
+            raise ValueError("candidate evidence IDs must not be empty")
+        if len(self.evidence_ids) != len(set(self.evidence_ids)):
+            raise ValueError("candidate evidence IDs must be unique")
+        if not isinstance(self.as_of, str) or not self.as_of.strip():
+            raise ValueError("candidate as_of must not be empty")
+        if any(not isinstance(gap, str) or not gap.strip() for gap in self.evidence_gaps):
+            raise ValueError("candidate evidence gaps must not be empty")
+        financial_source_ids = {
+            source_id for financial in self.financials for source_id in financial.source_ids
+        }
+        if not financial_source_ids.issubset(self.evidence_ids):
+            raise ValueError("candidate financial sources must be present in evidence IDs")
 
 
 @dataclass(frozen=True, slots=True)

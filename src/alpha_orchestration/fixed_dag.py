@@ -1,4 +1,4 @@
-"""Sequential fixed-DAG execution with exact event-journal traces.
+"""Dependency-aware fixed-DAG execution with exact event-journal traces.
 
 The runtime emits unsequenced event drafts only. RunController remains the
 sole owner of timestamps, sequence numbers, reduction, and journal writes, so
@@ -7,6 +7,7 @@ replay never needs a model, a tool registry, or network access.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -95,8 +96,25 @@ class _PreparedCall:
     observation_bindings: dict[str, JsonValue]
 
 
+@dataclass(frozen=True, slots=True)
+class _WorkerEvent:
+    task_id: str
+    draft: EventDraft
+
+
+@dataclass(frozen=True, slots=True)
+class _WorkerFinished:
+    task_id: str
+    error: BaseException | None
+
+
+@dataclass(slots=True)
+class _SchedulerStats:
+    observed_peak_active_tasks: int = 0
+
+
 class FixedDagRuntime:
-    """Execute one immutable workflow in stable topological order."""
+    """Execute one immutable workflow with bounded dependency-aware concurrency."""
 
     def __init__(
         self,
@@ -208,6 +226,8 @@ class FixedDagRuntime:
                 agent_id=agent_id,
                 payload={"role": agent_id, "lane": "fixed_dag"},
             )
+        effective_active_slots = min(self.workflow.active_slots, spec.active_slots)
+        scheduler_stats = _SchedulerStats()
         yield EventDraft(
             EventKind.WORKFLOW_PLANNED,
             f"Planned fixed workflow {self.workflow.workflow_id}@{self.workflow.version}",
@@ -217,14 +237,25 @@ class FixedDagRuntime:
                 "plan_hash": self._plan_hash,
                 "plan": _json_copy(self._plan, "workflow plan"),
                 "tasks": _json_copy(self._planned_tasks, "planned tasks"),
-                "effective_active_slots": min(self.workflow.active_slots, spec.active_slots),
-                "actual_active_slots": 1,
-                "active_slots": min(self.workflow.active_slots, spec.active_slots),
+                "configured_active_slots": self.workflow.active_slots,
+                "requested_active_slots": spec.active_slots,
+                "effective_active_slots": effective_active_slots,
+                "actual_active_slots": None,
+                "active_slots": effective_active_slots,
             },
         )
 
         outcomes: dict[str, _TaskOutcome] = {}
-        for task in self.workflow.topological_tasks:
+        if effective_active_slots > 1:
+            async for event in self._stream_concurrent_tasks(
+                spec,
+                outcomes,
+                effective_active_slots,
+                scheduler_stats,
+            ):
+                yield event
+        serial_tasks = () if effective_active_slots > 1 else self.workflow.topological_tasks
+        for task in serial_tasks:
             failed_dependencies = tuple(
                 dependency
                 for dependency in task.depends_on
@@ -307,6 +338,8 @@ class FixedDagRuntime:
             ):
                 yield event
 
+        if effective_active_slots == 1:
+            scheduler_stats.observed_peak_active_tasks = 1
         for agent_id in agent_ids:
             owned = [
                 outcomes[task.task_id] for task in self.workflow.tasks if task.agent_id == agent_id
@@ -342,6 +375,7 @@ class FixedDagRuntime:
                 "plan_hash": self._plan_hash,
                 "counts": counts,
                 "required_failures": required_failures,
+                "observed_peak_active_tasks": scheduler_stats.observed_peak_active_tasks,
                 "partial": any(
                     outcome.status is not TaskStatus.COMPLETE for outcome in outcomes.values()
                 ),
@@ -349,6 +383,190 @@ class FixedDagRuntime:
         )
         if required_failures:
             raise WorkflowExecutionError(f"required tasks failed: {', '.join(required_failures)}")
+
+    async def _stream_concurrent_tasks(
+        self,
+        spec: RunSpec,
+        outcomes: dict[str, _TaskOutcome],
+        active_slots: int,
+        stats: _SchedulerStats,
+    ) -> AsyncIterator[EventDraft]:
+        task_order = self.workflow.topological_task_ids
+        tasks_by_id = self.workflow.tasks_by_id
+        pending = set(task_order)
+        terminal: set[str] = set()
+        active_agents: set[str] = set()
+        running: dict[str, asyncio.Task[None]] = {}
+        queue: asyncio.Queue[_WorkerEvent | _WorkerFinished] = asyncio.Queue()
+
+        async def pump(
+            task: TaskDefinition,
+            outcome: _TaskOutcome,
+            failed_dependencies: tuple[str, ...],
+            degraded_dependencies: tuple[str, ...],
+            allowed_sources: tuple[str, ...],
+            degraded_ancestry: tuple[str, ...],
+            task_evidence: _TaskEvidence,
+        ) -> None:
+            error: BaseException | None = None
+            try:
+                async for draft in self._stream_task(
+                    spec,
+                    task,
+                    outcome,
+                    outcomes,
+                    failed_dependencies,
+                    degraded_dependencies,
+                    allowed_sources,
+                    degraded_ancestry,
+                    task_evidence,
+                ):
+                    await queue.put(_WorkerEvent(task.task_id, draft))
+            except BaseException as exc:
+                error = exc
+            finally:
+                await queue.put(_WorkerFinished(task.task_id, error))
+
+        try:
+            while pending or running:
+                made_progress = True
+                while made_progress:
+                    made_progress = False
+                    for task_id in task_order:
+                        if task_id not in pending:
+                            continue
+                        task = tasks_by_id[task_id]
+                        if any(dependency not in terminal for dependency in task.depends_on):
+                            continue
+
+                        failed_dependencies = tuple(
+                            dependency
+                            for dependency in task.depends_on
+                            if outcomes[dependency].status in _FAILED
+                        )
+                        degraded_dependencies = tuple(
+                            dependency
+                            for dependency in task.depends_on
+                            if outcomes[dependency].status is TaskStatus.PARTIAL
+                        )
+                        degraded_ancestry = tuple(
+                            dict.fromkeys(
+                                ancestor
+                                for dependency in task.depends_on
+                                for ancestor in (
+                                    *((dependency,) if outcomes[dependency].status in _FAILED else ()),
+                                    *((dependency,) if outcomes[dependency].status is TaskStatus.PARTIAL else ()),
+                                    *outcomes[dependency].degraded_ancestry,
+                                )
+                            )
+                        )
+                        if failed_dependencies and not task.allow_failed_dependencies:
+                            reason = f"blocked by failed dependencies: {', '.join(failed_dependencies)}"
+                            outcomes[task_id] = _TaskOutcome(
+                                status=TaskStatus.SKIPPED,
+                                error=reason,
+                            )
+                            pending.remove(task_id)
+                            yield EventDraft(
+                                EventKind.TASK_SKIPPED,
+                                f"Skipped task {task_id}: dependency failure",
+                                agent_id=task.agent_id,
+                                payload={
+                                    "task_id": task_id,
+                                    "reason": reason,
+                                    "failed_dependencies": list(failed_dependencies),
+                                    "required": task.required,
+                                },
+                            )
+                            terminal.add(task_id)
+                            made_progress = True
+                            break
+
+                        if len(running) >= active_slots:
+                            break
+                        if task.agent_id in active_agents:
+                            continue
+
+                        task_evidence = self._task_evidence[task_id]
+                        allowed_sources = _task_source_ids(
+                            task,
+                            outcomes,
+                            task_evidence.source_ids,
+                        )
+                        outcome = _TaskOutcome(
+                            status=TaskStatus.RUNNING,
+                            degraded_ancestry=degraded_ancestry,
+                        )
+                        outcomes[task_id] = outcome
+                        pending.remove(task_id)
+                        active_agents.add(task.agent_id)
+                        yield EventDraft(
+                            EventKind.TASK_STARTED,
+                            f"Started fixed task {task_id}",
+                            agent_id=task.agent_id,
+                            payload={
+                                "task_id": task_id,
+                                "dependency_outcomes": {
+                                    dependency: outcomes[dependency].status.value
+                                    for dependency in task.depends_on
+                                },
+                                "failed_dependencies": list(failed_dependencies),
+                                "degraded_dependencies": list(degraded_dependencies),
+                                "evidence_mode": task_evidence.mode,
+                                "degraded_ancestry": list(degraded_ancestry),
+                                "evidence_packet_hash": (
+                                    None
+                                    if task_evidence.packet is None
+                                    else _canonical_hash(task_evidence.packet.to_dict())
+                                ),
+                                "allowed_source_ids": list(allowed_sources),
+                            },
+                        )
+                        running[task_id] = asyncio.create_task(
+                            pump(
+                                task,
+                                outcome,
+                                failed_dependencies,
+                                degraded_dependencies,
+                                allowed_sources,
+                                degraded_ancestry,
+                                task_evidence,
+                            ),
+                            name=f"alpha:{spec.run_id}:{task_id}",
+                        )
+                        stats.observed_peak_active_tasks = max(
+                            stats.observed_peak_active_tasks,
+                            len(running),
+                        )
+                        made_progress = True
+
+                if not running:
+                    if pending:
+                        blocked = ", ".join(
+                            task_id for task_id in task_order if task_id in pending
+                        )
+                        raise WorkflowExecutionError(
+                            f"scheduler deadlock with pending tasks: {blocked}"
+                        )
+                    break
+
+                item = await queue.get()
+                if isinstance(item, _WorkerEvent):
+                    yield item.draft
+                    continue
+
+                worker = running.pop(item.task_id)
+                active_agents.remove(tasks_by_id[item.task_id].agent_id)
+                await worker
+                if item.error is not None:
+                    raise item.error
+                terminal.add(item.task_id)
+        finally:
+            unfinished = tuple(running.values())
+            for worker in unfinished:
+                worker.cancel()
+            if unfinished:
+                await asyncio.gather(*unfinished, return_exceptions=True)
 
     async def _stream_task(
         self,

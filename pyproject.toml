@@ -32,7 +32,8 @@ where = ["src"]
 alpha_orchestration = ["tui/*.tcss"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+minversion = "8.0"
+addopts = "-q --strict-config --strict-markers -ra"
 testpaths = ["tests"]
 
 [tool.ruff]

@@ -5,7 +5,15 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from alpha_orchestration.domain import CandidateBucket, EventKind, RunSpec, Stage
+from alpha_orchestration.domain import (
+    CandidateBucket,
+    CandidateConfidence,
+    CandidateDataQuality,
+    CandidateSourceMode,
+    EventKind,
+    RunSpec,
+    Stage,
+)
 from alpha_orchestration.ports import EventDraft
 
 
@@ -65,6 +73,11 @@ def _candidate(
     kill_if: str,
     next_workflow: str,
     evidence_ids: list[str],
+    financials: list[dict[str, object]],
+    confidence: CandidateConfidence,
+    data_quality: CandidateDataQuality,
+    as_of: str,
+    evidence_gaps: list[str],
 ) -> EventDraft:
     return EventDraft(
         EventKind.CANDIDATE_UPDATED,
@@ -83,6 +96,12 @@ def _candidate(
             "kill_if": kill_if,
             "next_workflow": next_workflow,
             "evidence_ids": evidence_ids,
+            "financials": financials,
+            "confidence": confidence.value,
+            "data_quality": data_quality.value,
+            "as_of": as_of,
+            "source_mode": CandidateSourceMode.SYNTHETIC.value,
+            "evidence_gaps": evidence_gaps,
         },
     )
 
@@ -397,7 +416,54 @@ def build_demo_events(spec: RunSpec) -> tuple[EventDraft, ...]:
             investable_if="Two reporting periods confirm conversion, cash realization, and stable concentration.",
             kill_if="Cancellations rise or incremental margins reverse before conversion is visible.",
             next_workflow="company_tearsheet",
-            evidence_ids=["demo:filings:v1", "demo:fundamentals:v1", "demo:catalyst:v1"],
+            evidence_ids=[
+                "demo:filings:v1",
+                "demo:fundamentals:v1",
+                "demo:market:v1",
+                "demo:valuation:v1",
+                "demo:catalyst:v1",
+            ],
+            financials=[
+                {
+                    "metric": "revenue",
+                    "label": "Revenue",
+                    "value": 1280.0,
+                    "unit": "USD millions",
+                    "period": "FY2025 fixture",
+                    "source_ids": ["demo:fundamentals:v1"],
+                },
+                {
+                    "metric": "revenue_growth",
+                    "label": "Revenue growth",
+                    "value": 0.24,
+                    "unit": "ratio",
+                    "period": "FY2025 vs FY2024 fixture",
+                    "source_ids": ["demo:fundamentals:v1"],
+                },
+                {
+                    "metric": "operating_margin",
+                    "label": "Operating margin",
+                    "value": 0.18,
+                    "unit": "ratio",
+                    "period": "FY2025 fixture",
+                    "source_ids": ["demo:fundamentals:v1"],
+                },
+                {
+                    "metric": "enterprise_value_to_revenue",
+                    "label": "EV / revenue",
+                    "value": 4.8,
+                    "unit": "x",
+                    "period": "fixture-v1",
+                    "source_ids": ["demo:market:v1", "demo:valuation:v1"],
+                },
+            ],
+            confidence=CandidateConfidence.MEDIUM,
+            data_quality=CandidateDataQuality.PARTIAL,
+            as_of="fixture-v1 · not live",
+            evidence_gaps=[
+                "Backlog cancellation and customer-concentration detail",
+                "Live filing and market-data verification",
+            ],
         ),
     )
     add(
@@ -414,7 +480,52 @@ def build_demo_events(spec: RunSpec) -> tuple[EventDraft, ...]:
             investable_if="A better entry or upward estimate revisions improve risk compensation.",
             kill_if="Growth decelerates while the expectations premium remains elevated.",
             next_workflow="scenario_sensitivity",
-            evidence_ids=["demo:market:v1", "demo:valuation:v1"],
+            evidence_ids=[
+                "demo:fundamentals:v1",
+                "demo:market:v1",
+                "demo:valuation:v1",
+            ],
+            financials=[
+                {
+                    "metric": "revenue",
+                    "label": "Revenue",
+                    "value": 9400.0,
+                    "unit": "USD millions",
+                    "period": "FY2025 fixture",
+                    "source_ids": ["demo:fundamentals:v1"],
+                },
+                {
+                    "metric": "revenue_growth",
+                    "label": "Revenue growth",
+                    "value": 0.16,
+                    "unit": "ratio",
+                    "period": "FY2025 vs FY2024 fixture",
+                    "source_ids": ["demo:fundamentals:v1"],
+                },
+                {
+                    "metric": "operating_margin",
+                    "label": "Operating margin",
+                    "value": 0.31,
+                    "unit": "ratio",
+                    "period": "FY2025 fixture",
+                    "source_ids": ["demo:fundamentals:v1"],
+                },
+                {
+                    "metric": "enterprise_value_to_revenue",
+                    "label": "EV / revenue",
+                    "value": 9.6,
+                    "unit": "x",
+                    "period": "fixture-v1",
+                    "source_ids": ["demo:market:v1", "demo:valuation:v1"],
+                },
+            ],
+            confidence=CandidateConfidence.MEDIUM,
+            data_quality=CandidateDataQuality.PARTIAL,
+            as_of="fixture-v1 · not live",
+            evidence_gaps=[
+                "Current entry-price and consensus expectations",
+                "Live filing and market-data verification",
+            ],
         ),
     )
     add(
@@ -431,7 +542,54 @@ def build_demo_events(spec: RunSpec) -> tuple[EventDraft, ...]:
             investable_if="A filing or call quantifies the pathway from product exposure to reported economics.",
             kill_if="The next disclosure again omits orders, backlog, revenue, and margin attribution.",
             next_workflow="meeting_prep",
-            evidence_ids=["demo:filings:v1", "demo:risk:v1"],
+            evidence_ids=[
+                "demo:filings:v1",
+                "demo:fundamentals:v1",
+                "demo:market:v1",
+                "demo:valuation:v1",
+                "demo:risk:v1",
+            ],
+            financials=[
+                {
+                    "metric": "revenue",
+                    "label": "Revenue",
+                    "value": 760.0,
+                    "unit": "USD millions",
+                    "period": "FY2025 fixture",
+                    "source_ids": ["demo:fundamentals:v1"],
+                },
+                {
+                    "metric": "revenue_growth",
+                    "label": "Revenue growth",
+                    "value": 0.29,
+                    "unit": "ratio",
+                    "period": "FY2025 vs FY2024 fixture",
+                    "source_ids": ["demo:fundamentals:v1"],
+                },
+                {
+                    "metric": "operating_margin",
+                    "label": "Operating margin",
+                    "value": 0.09,
+                    "unit": "ratio",
+                    "period": "FY2025 fixture",
+                    "source_ids": ["demo:fundamentals:v1"],
+                },
+                {
+                    "metric": "enterprise_value_to_revenue",
+                    "label": "EV / revenue",
+                    "value": 6.9,
+                    "unit": "x",
+                    "period": "fixture-v1",
+                    "source_ids": ["demo:market:v1", "demo:valuation:v1"],
+                },
+            ],
+            confidence=CandidateConfidence.LOW,
+            data_quality=CandidateDataQuality.LIMITED,
+            as_of="fixture-v1 · not live",
+            evidence_gaps=[
+                "Quantified theme exposure in orders, backlog, revenue, and margin",
+                "Live filing and market-data verification",
+            ],
         ),
     )
     add(
