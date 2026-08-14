@@ -17,17 +17,20 @@ From the repository root:
 
 The command fails at the first unsuccessful stage and runs, in order:
 
-1. Ruff lint across production code, tests, and scripts;
-2. the complete pytest suite with strict configuration and marker validation;
-3. a multi-issuer fan-out/fan-in append/replay cycle with an offline model fixture;
-4. an installed-package import smoke check; and
-5. the module CLI's `--help` path.
+1. project-memory protocol integrity, including required files, headings, and local links;
+2. a self-test of verifier-launched Python-process network denial and local socket-pair IPC;
+3. Ruff lint across production code, tests, and scripts;
+4. the complete pytest suite with strict configuration and marker validation;
+5. a multi-issuer fan-out/fan-in append/replay cycle with an offline model fixture;
+6. an installed-package import smoke check; and
+7. the module CLI's `--help` path.
 
 The verifier resolves the repository root from its own location, disables third-party
 pytest plugin auto-loading, removes ambient SEC identity and pytest options, hides GPUs,
-and enables common library offline flags. It does not load `.env`, start KernelCubed,
-or call SEC, Yahoo, model hubs, or any other network service. Dependency installation is
-separate and must already be complete.
+enables common library offline flags, and installs a Python-process socket/DNS guard in
+each child. Repository code on the default path does not load `.env`, start KernelCubed,
+or intentionally call SEC, Yahoo, or model hubs. Dependency installation is separate
+and must already be complete.
 
 Formatting is intentionally not a blocking stage yet. `ruff format --check .` currently
 reports pre-existing formatting drift across older files; adopt that check only with a
@@ -146,16 +149,25 @@ fixture that proves normalization, evidence locators, unit/period behavior, malf
 input handling, and deterministic IDs. Live smoke checks, if performed separately,
 must be explicit and must not become prerequisites for this test gate.
 
-The pytest suite also installs an automatic connection guard that rejects IPv4 and IPv6
-connections before they reach the operating system while preserving local Unix-domain
-and socket-pair IPC. `ALPHA_ALLOW_LIVE_NETWORK=1` disables that guard only for an
-explicit, separately invoked live test; the single-command offline gate removes that
-variable from its child environment.
+The verifier injects a `sitecustomize` guard into every Python child process. It rejects
+IPv4/IPv6 `connect`, `connect_ex`, `bind`, `sendto`, `sendmsg`, connection/server helpers,
+and standard DNS resolution while preserving Unix-domain and socket-pair IPC. A dedicated
+non-pytest stage proves the guard loaded before the rest of the gate. The pytest suite
+installs the same policy through an automatic fixture for direct focused commands.
+
+This protects verifier-launched Python processes and default Python code paths; it is not
+an OS network namespace or firewall. Non-Python subprocesses, native extensions,
+deliberately cleared guard variables, and lower-level system calls are outside its
+enforcement boundary. `ALPHA_ALLOW_LIVE_NETWORK=1` disables only the direct pytest
+fixture for an explicit live test. The single-command gate removes that variable and
+keeps its Python-process guard enabled.
 
 ## Continuous integration
 
 `.github/workflows/offline-verification.yml` runs the same single command on Python
-3.11, 3.12, and 3.13 for pushes, pull requests, and manual dispatches. CI installs only
-the base project and `dev` extra; it does not install yfinance or KernelCubed and does
-not receive provider or model credentials.
+3.11, 3.12, and 3.13 for pushes to `main`/`dev`, pull requests targeting either branch,
+and manual dispatches. A workflow/PR-or-ref concurrency key cancels superseded runs so
+stale commits do not consume the complete matrix. CI installs only the base project and
+`dev` extra; it does not install yfinance or KernelCubed and does not receive provider or
+model credentials.
 
