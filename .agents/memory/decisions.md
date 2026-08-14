@@ -68,3 +68,21 @@ The controller owns normalized calculations, cross-issuer ranking, and candidate
 projection. A provider request may use a cache record only while it is fresh and its
 request reference and content hash pass integrity checks; otherwise the provider is
 called or the operation fails closed.
+
+### 2026-08-13 — Automatic live default and cohort semantics
+
+The no-argument `python -m alpha_orchestration` entry point is the fail-closed automatic
+live workflow. It launches immediately only when non-secret SEC identity and yfinance
+readiness checks pass; otherwise it shows a preflight state and performs no research.
+It never substitutes synthetic fixtures. Explicit `--live --tickers` and `--demo` modes
+remain available as expert paths.
+
+The default `US_LARGE_LIQUID_V1` policy inspects at most 1,000 market-cap-ranked provider
+rows, requires at least 200 eligible issuers, selects 300, and uses eight reusable
+logical lanes. UI and journal telemetry distinguish provider matches, inspected rows,
+selected issuers, screened issuers, optional model deep reviews, surfaced research
+priorities, post-inspection exclusions, and failures. Provider matches that were not
+inspected are reported as uninspected, never as researched or excluded. The baseline
+analysis is explicitly labeled a rule-based screen; optional model diligence remains
+disabled unless separately configured and cannot change controller-owned rank or
+evidence.

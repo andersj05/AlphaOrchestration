@@ -1,14 +1,16 @@
 import asyncio
 
 from textual.containers import VerticalScroll
-from textual.widgets import Button, DataTable, Select, Static, TabbedContent
+from textual.widgets import Button, DataTable, Input, Select, Static, TabbedContent
 
 from alpha_orchestration.adapters.demo import DemoRuntime
 from alpha_orchestration.domain import EventKind, RunSpec, RunStatus
 from alpha_orchestration.journal import MemoryJournal
 from alpha_orchestration.ports import EventDraft
 from alpha_orchestration.tui.app import (
+    AUTOMATIC_LIVE_MODE,
     AlphaApp,
+    AutomaticPreflightScreen,
     LiveReadiness,
     MissionScreen,
     RunScreen,
@@ -515,3 +517,186 @@ def test_live_candidate_detail_keeps_retrieval_and_source_url() -> None:
     detail = asyncio.run(exercise())
     assert "retrieved 2026-08-13T12:00:00+00:00" in detail
     assert "Source URL: https://www.sec.gov/Archives/edgar/data/1/alp-2024.htm" in detail
+
+
+class AutomaticFunnelRuntime:
+    async def stream(self, spec: RunSpec):  # type: ignore[no-untyped-def]
+        del spec
+        starting = {
+            "profile": "US_LARGE_LIQUID_V1",
+            "stage": "screening",
+            "total": 300,
+            "provider_matches": 1_962,
+            "inspected": 1_000,
+            "selected": 300,
+            "discovered": 1_962,
+            "eligible": 300,
+            "screened": 125,
+            "deep_reviewed": 0,
+            "surfaced": 0,
+            "excluded": 700,
+            "failed": 0,
+            "source_posture": "SEC OFFICIAL MAP + SEPARATELY TIMESTAMPED YFINANCE EVIDENCE",
+            "as_of": "2026-08-13",
+            "retrieved_at": "2026-08-13T15:00:00+00:00",
+            "batches_completed": 5,
+            "batches_total": 12,
+            "configured_agent_lanes": 8,
+            "configured_provider_slots": 8,
+            "observed_peak_provider_requests": 8,
+            "observed_peak_analysis_tasks": 8,
+            "analysis_mode": "RULE-BASED",
+            "universe_rows": [
+                {"ticker": "ALP", "company": "Alpha Logic", "status": "surfaced", "rank": 1},
+                {"ticker": "BET", "company": "Beta Systems", "status": "screened", "rank": 122},
+                {"ticker": "GAM", "company": "Gamma Works", "status": "failed", "rank": 250},
+            ],
+        }
+        yield EventDraft(
+            EventKind.STAGE_STARTED,
+            "Screened 125 of 300 selected issuers",
+            payload={"stage": "analysis", "progress": 48, "universe_funnel": starting},
+        )
+        completed = {
+            **starting,
+            "stage": "complete",
+            "screened": 297,
+            "deep_reviewed": 36,
+            "surfaced": 1,
+            "failed": 3,
+            "batches_completed": 12,
+            "retrieved_at": "2026-08-13T15:12:00+00:00",
+        }
+        yield EventDraft(
+            EventKind.CANDIDATE_UPDATED,
+            "Surfaced ALP for deeper research",
+            payload={
+                "candidate_id": "ticker:ALP",
+                "ticker": "ALP",
+                "company": "Alpha Logic",
+                "bucket": "advance",
+                "priority_score": 73,
+                "variant_wedge": "Rule-based screen signal requiring deeper diligence",
+                "why_now": "Recent source-backed growth and cash conversion passed the screen",
+                "first_rejection": "The screen does not establish what is priced in",
+                "investable_if": "A sourced valuation and expectations review confirms a variant wedge",
+                "kill_if": "Current valuation already discounts the operating case",
+                "next_workflow": "company_tearsheet",
+                "source_mode": "live",
+                "confidence": "medium",
+                "data_quality": "partial",
+                "as_of": "2026-08-13",
+                "universe_funnel": completed,
+            },
+        )
+
+
+def test_automatic_startup_fails_closed_to_preflight_without_fixture_fallback() -> None:
+    async def exercise(size: tuple[int, int]) -> None:
+        calls = 0
+
+        def forbidden_runtime(_spec: RunSpec):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("blocked automatic startup must not construct a runtime")
+
+        app = AlphaApp(
+            initial_spec=RunSpec(
+                sector="U.S. listed equities",
+                universe_size=300,
+                agent_budget=8,
+                active_slots=8,
+                mode=AUTOMATIC_LIVE_MODE,
+                run_id="automatic-preflight",
+            ),
+            automatic_runtime_factory=forbidden_runtime,
+            live_readiness=LiveReadiness(
+                sec_identity_configured=False,
+                yfinance_installed=True,
+                runtime_available=True,
+                blocker="ALPHA_SEC_USER_AGENT is not configured",
+            ),
+        )
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            assert isinstance(app.screen, AutomaticPreflightScreen)
+            rendered = str(app.screen.query_one("#automatic-preflight-status", Static).render())
+            assert "SEC IDENTITY" in rendered
+            assert "MISSING" in rendered
+            assert "ALPHA_SEC_USER_AGENT" in rendered
+            assert "PREFLIGHT BLOCKED" in str(
+                app.screen.query_one("#automatic-preflight-copy", Static).render()
+            )
+            assert calls == 0
+            card = app.screen.query_one("#automatic-preflight-card", VerticalScroll)
+            card.scroll_end(animate=False)
+            await pilot.pause()
+            expert_button = app.screen.query_one("#expert-setup", Button)
+            assert card.region.contains_region(expert_button.region)
+            await pilot.click("#expert-setup")
+            await pilot.pause()
+            assert isinstance(app.screen, MissionScreen)
+
+    for terminal_size in ((120, 38), (90, 28)):
+        asyncio.run(exercise(terminal_size))
+
+
+def test_automatic_large_universe_funnel_is_compact_readable_and_capturable() -> None:
+    async def exercise() -> str:
+        app = AlphaApp(
+            initial_spec=RunSpec(
+                sector="U.S. listed equities",
+                universe_size=300,
+                agent_budget=8,
+                active_slots=8,
+                mode=AUTOMATIC_LIVE_MODE,
+                run_id="automatic-funnel",
+            ),
+            automatic_runtime_factory=lambda _spec: AutomaticFunnelRuntime(),
+            live_readiness=LiveReadiness(
+                sec_identity_configured=True,
+                yfinance_installed=True,
+                runtime_available=True,
+                analysis_label="RULE-BASED",
+            ),
+            journal_factory=lambda _: MemoryJournal(),
+        )
+        async with app.run_test(size=(150, 44)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, RunScreen)
+            await asyncio.wait_for(screen.completed.wait(), timeout=2)
+            await pilot.pause()
+            funnel = str(screen.query_one("#results-funnel", Static).render())
+            status = str(screen.query_one("#results-status", Static).render())
+            coverage = str(screen.query_one("#result-coverage", Static).render())
+            sources = str(screen.query_one("#result-sources", Static).render())
+            assert "US_LARGE_LIQUID_V1" in funnel
+            assert "PROVIDER MATCHES 1,962" in funnel
+            assert "INSPECTED 1,000" in funnel
+            assert "SELECTED 300" in funnel
+            assert "297" in funnel
+            assert "36" in funnel
+            assert "EXCLUDED AFTER INSPECTION 700" in funnel
+            assert "UNINSPECTED 962" in funnel
+            assert "FAILED 3" in funnel
+            assert "AUTOMATIC SCREEN COMPLETE WITH GAPS" in status
+            assert "SCREENED / SELECTED" in coverage
+            assert "297 / 300" in coverage
+            assert "SEC OFFICIAL MAP + SEPARATELY TIMESTAMPED YFINANCE EVIDENCE" in sources
+            assert "RULE-BASED" in sources
+            assert screen.query_one("#results-table", DataTable).row_count == 1
+            universe_table = screen.query_one("#universe-table", DataTable)
+            assert universe_table.row_count == 3
+            screen.query_one("#universe-search", Input).value = "beta"
+            await pilot.pause()
+            assert universe_table.row_count == 1
+            universe_summary = str(screen.query_one("#universe-summary", Static).render())
+            assert "showing 1 of 3 persisted rows" in universe_summary
+            svg = app.export_screenshot(title="Automatic universe results", simplify=True)
+            assert svg.startswith("<svg")
+            assert "AUTOMATIC" in svg
+            return svg
+
+    capture = asyncio.run(exercise())
+    assert len(capture) > 10_000

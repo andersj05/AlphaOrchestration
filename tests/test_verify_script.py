@@ -23,6 +23,7 @@ def test_check_plan_covers_the_complete_offline_gate() -> None:
         "Ruff lint",
         "Strict offline test suite",
         "Deterministic execution/replay harness",
+        "Automatic 300-issuer scale harness",
         "Installed package smoke",
         "CLI smoke",
     ]
@@ -32,7 +33,8 @@ def test_check_plan_covers_the_complete_offline_gate() -> None:
     assert "--strict-config" in checks[3].command
     assert "--strict-markers" in checks[3].command
     assert checks[4].command[-1].endswith("scripts/run_dag_harness.py")
-    assert checks[6].command == (
+    assert checks[5].command[-1].endswith("scripts/run_automatic_harness.py")
+    assert checks[7].command == (
         "python-under-test",
         "-m",
         "alpha_orchestration",

@@ -443,7 +443,7 @@ def _candidate_payload(
         ),
         "why_now": (
             f"Latest comparable SEC fiscal-year evidence ends {period_end}; "
-            "market fields use the separately timestamped yfinance snapshot when available."
+            "market fields use separately timestamped yfinance evidence when available."
         ),
         "first_rejection": (
             "A deterministic screen can surface accounting or valuation outliers without "

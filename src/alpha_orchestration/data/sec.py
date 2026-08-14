@@ -78,6 +78,11 @@ class SecDataClient:
 
         return await self._get_json("https://www.sec.gov/files/company_tickers.json")
 
+    async def company_tickers_exchange(self) -> dict[str, Any]:
+        """Return official SEC ticker/CIK/name/exchange associations."""
+
+        return await self._get_json("https://www.sec.gov/files/company_tickers_exchange.json")
+
     @staticmethod
     def recent_filings(
         submissions: Mapping[str, Any],
