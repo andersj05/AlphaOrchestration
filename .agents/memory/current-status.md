@@ -4,12 +4,12 @@ Last updated: 2026-08-13
 
 ## Snapshot
 
-The fail-closed automatic-universe prototype is implemented on
-`codex/feature-automatic-universe-research`, has passed the authoritative offline
-verifier, and has completed both network and fresh-cache real-provider smoke runs. With
-no arguments, `python -m alpha_orchestration` launches automatic live research only when
-non-secret readiness checks pass; otherwise it shows preflight and starts no research.
-Manual `--live --tickers` and offline `--demo` paths remain available explicitly.
+The fail-closed automatic-universe prototype was released through feature PR #4 into
+`dev` and release PR #5 into `main`. It passed the authoritative offline verifier and
+completed both network and fresh-cache real-provider smoke runs. With no arguments,
+`python -m alpha_orchestration` launches automatic live research only when non-secret
+readiness checks pass; otherwise it shows preflight and starts no research. Manual
+`--live --tickers` and offline `--demo` paths remain available explicitly.
 
 The default `US_LARGE_LIQUID_V1` profile targets 300 selected issuers, requires at least
 200, inspects at most 1,000 market-cap-ranked provider rows, and uses eight reusable
