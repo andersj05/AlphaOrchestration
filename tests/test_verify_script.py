@@ -18,17 +18,21 @@ def test_check_plan_covers_the_complete_offline_gate() -> None:
     checks = verify.build_checks("python-under-test")
 
     assert [check.name for check in checks] == [
+        "Project memory integrity",
+        "Offline network isolation",
         "Ruff lint",
         "Strict offline test suite",
         "Deterministic execution/replay harness",
         "Installed package smoke",
         "CLI smoke",
     ]
-    assert checks[0].command == ("python-under-test", "-m", "ruff", "check", ".")
-    assert "--strict-config" in checks[1].command
-    assert "--strict-markers" in checks[1].command
-    assert checks[2].command[-1].endswith("scripts/run_dag_harness.py")
-    assert checks[4].command == (
+    assert checks[0].command[-1].endswith("scripts/check_project_memory.py")
+    assert checks[1].command[-1].endswith("scripts/check_offline_network.py")
+    assert checks[2].command == ("python-under-test", "-m", "ruff", "check", ".")
+    assert "--strict-config" in checks[3].command
+    assert "--strict-markers" in checks[3].command
+    assert checks[4].command[-1].endswith("scripts/run_dag_harness.py")
+    assert checks[6].command == (
         "python-under-test",
         "-m",
         "alpha_orchestration",
@@ -50,9 +54,10 @@ def test_verification_environment_removes_ambient_provider_and_pytest_controls()
     assert environment["RETAINED"] == "yes"
     assert "ALPHA_ALLOW_LIVE_NETWORK" not in environment
     assert "ALPHA_SEC_USER_AGENT" not in environment
-    assert "PYTHONPATH" not in environment
+    assert environment["PYTHONPATH"] == str(verify.OFFLINE_GUARD_PATH)
     assert "PYTEST_ADDOPTS" not in environment
     assert environment["ALPHA_VERIFY_OFFLINE"] == "1"
+    assert environment["ALPHA_OFFLINE_GUARD_ACTIVE"] == "0"
     assert environment["CUDA_VISIBLE_DEVICES"] == ""
     assert environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
 

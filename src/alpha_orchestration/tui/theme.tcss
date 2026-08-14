@@ -24,8 +24,8 @@ Screen {
 
 #mission-card {
     width: 78;
-    height: auto;
-    max-height: 44;
+    height: 100%;
+    max-height: 48;
     padding: 2 3;
     background: $alpha-panel;
     border: round $alpha-border;
@@ -90,8 +90,8 @@ Input:focus, Select:focus {
     border-left: thick $alpha-accent;
 }
 
-#demo-notice {
-    height: 4;
+#readiness-panel {
+    height: 5;
     padding: 1 2;
     background: #171A1B;
     border-left: thick $alpha-warning;
@@ -218,7 +218,7 @@ Button.-primary {
 }
 
 #results-status {
-    height: 4;
+    height: 5;
     padding: 1 2;
     margin-bottom: 1;
     background: $alpha-panel-raised;

@@ -73,6 +73,11 @@ class SecDataClient:
     async def company_facts(self, cik: str | int) -> dict[str, Any]:
         return await self._get_json(f"/api/xbrl/companyfacts/CIK{normalize_cik(cik)}.json")
 
+    async def company_tickers(self) -> dict[str, Any]:
+        """Return the SEC-published ticker/CIK mapping used for trusted identity joins."""
+
+        return await self._get_json("https://www.sec.gov/files/company_tickers.json")
+
     @staticmethod
     def recent_filings(
         submissions: Mapping[str, Any],

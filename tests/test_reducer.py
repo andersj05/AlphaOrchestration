@@ -17,7 +17,14 @@ from alpha_orchestration.domain import (
 from alpha_orchestration.reducer import reduce_event
 
 
-def event(run_spec: RunSpec, sequence: int, kind: EventKind, **payload):
+def event(
+    run_spec: RunSpec,
+    sequence: int,
+    kind: EventKind,
+    *,
+    agent_id: str | None = None,
+    **payload,
+):
     return RunEvent(
         schema_version=1,
         run_id=run_spec.run_id,
@@ -25,6 +32,7 @@ def event(run_spec: RunSpec, sequence: int, kind: EventKind, **payload):
         kind=kind,
         timestamp=datetime(2026, 1, 1, tzinfo=UTC),
         message=kind.value,
+        agent_id=agent_id,
         payload=payload,
     )
 
@@ -140,6 +148,7 @@ def test_candidate_triage_parses_financial_provenance_and_quality() -> None:
 
 def test_candidate_financial_sources_must_be_linked_as_evidence() -> None:
     spec = RunSpec(run_id="run-candidate-provenance")
+
     state = reduce_event(
         RunState(spec=spec),
         event(spec, 0, EventKind.RUN_CREATED, spec=spec.to_dict()),
@@ -170,3 +179,62 @@ def test_candidate_financial_sources_must_be_linked_as_evidence() -> None:
     }
     with pytest.raises(StateInvariantError, match="financial sources"):
         reduce_event(state, event(spec, 1, EventKind.CANDIDATE_UPDATED, **payload))
+
+
+def test_evidence_preserves_optional_live_provenance_and_legacy_defaults() -> None:
+    spec = RunSpec(run_id="run-evidence-provenance")
+    state = reduce_event(
+        RunState(spec=spec),
+        event(spec, 0, EventKind.RUN_CREATED, spec=spec.to_dict()),
+    )
+    state = reduce_event(
+        state,
+        event(
+            spec,
+            1,
+            EventKind.AGENT_REGISTERED,
+            agent_id="analyst",
+            role="Issuer analyst",
+            lane="ALP",
+        ),
+    )
+    state = reduce_event(
+        state,
+        event(
+            spec,
+            2,
+            EventKind.EVIDENCE_ADDED,
+            agent_id="analyst",
+            evidence_id="ev-live",
+            title="ALP annual filing",
+            source="SEC",
+            source_kind="company_facts",
+            summary="Live SEC record",
+            observed_at="2024-12-31T00:00:00+00:00",
+            retrieved_at="2026-08-13T12:00:00+00:00",
+            source_url="https://www.sec.gov/Archives/edgar/data/1/alp-2024.htm",
+        ),
+    )
+    state = reduce_event(
+        state,
+        event(
+            spec,
+            3,
+            EventKind.EVIDENCE_ADDED,
+            agent_id="analyst",
+            evidence_id="ev-legacy",
+            title="Legacy evidence",
+            source="Fixture",
+            source_kind="legacy",
+            summary="Old journal shape",
+            observed_at="fixture-v1",
+            synthetic=True,
+        ),
+    )
+
+    live = state.evidence["ev-live"]
+    assert live.retrieved_at == "2026-08-13T12:00:00+00:00"
+    assert live.source_url == "https://www.sec.gov/Archives/edgar/data/1/alp-2024.htm"
+    legacy = state.evidence["ev-legacy"]
+    assert legacy.retrieved_at == "not provided"
+    assert legacy.source_url == ""

@@ -2,8 +2,14 @@ name: Offline verification
 
 on:
   push:
+    branches: [main, dev]
   pull_request:
+    branches: [main, dev]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

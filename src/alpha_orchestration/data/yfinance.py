@@ -54,8 +54,8 @@ class YFinanceClient:
             return MarketSnapshot(
                 ticker=symbol,
                 currency=_optional_text(info.get("currency")),
-                last_price=_optional_float(info.get("last_price")),
-                market_cap=_optional_float(info.get("market_cap")),
+                last_price=_optional_float(_first_present(info, "lastPrice", "last_price")),
+                market_cap=_optional_float(_first_present(info, "marketCap", "market_cap")),
                 exchange=_optional_text(info.get("exchange")),
             )
 
@@ -91,6 +91,13 @@ class YFinanceClient:
             return tuple(rows)
 
         return await asyncio.to_thread(fetch)
+
+
+def _first_present(values: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in values:
+            return values[key]
+    return None
 
 
 def _optional_text(value: Any) -> str | None:

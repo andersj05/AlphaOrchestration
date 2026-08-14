@@ -1,12 +1,18 @@
 import asyncio
 
-from textual.widgets import DataTable, Static, TabbedContent
+from textual.containers import VerticalScroll
+from textual.widgets import Button, DataTable, Select, Static, TabbedContent
 
 from alpha_orchestration.adapters.demo import DemoRuntime
 from alpha_orchestration.domain import EventKind, RunSpec, RunStatus
 from alpha_orchestration.journal import MemoryJournal
 from alpha_orchestration.ports import EventDraft
-from alpha_orchestration.tui.app import AlphaApp, MissionScreen, RunScreen
+from alpha_orchestration.tui.app import (
+    AlphaApp,
+    LiveReadiness,
+    MissionScreen,
+    RunScreen,
+)
 
 
 def test_mission_screen_mounts() -> None:
@@ -233,8 +239,8 @@ def test_results_explain_in_progress_and_cancelled_states() -> None:
 def test_live_mode_is_not_labeled_as_synthetic() -> None:
     async def exercise() -> tuple[str, str]:
         app = AlphaApp(
-            initial_spec=RunSpec(run_id="live-results", mode="live"),
-            runtime_factory=lambda _: EmptyRuntime(),
+            initial_spec=RunSpec(run_id="live-results", mode="live", universe_size=3),
+            live_runtime_factory=lambda _spec, _tickers: EmptyRuntime(),
             journal_factory=lambda _: MemoryJournal(),
         )
         async with app.run_test(size=(150, 44)) as pilot:
@@ -257,8 +263,8 @@ def test_live_mode_is_not_labeled_as_synthetic() -> None:
 def test_execution_metric_prefers_observed_peak_concurrency() -> None:
     async def exercise() -> str:
         app = AlphaApp(
-            initial_spec=RunSpec(run_id="concurrency-results", mode="live"),
-            runtime_factory=lambda _: ConcurrencyTelemetryRuntime(),
+            initial_spec=RunSpec(run_id="concurrency-results", mode="live", universe_size=3),
+            live_runtime_factory=lambda _spec, _tickers: ConcurrencyTelemetryRuntime(),
             journal_factory=lambda _: MemoryJournal(),
         )
         async with app.run_test(size=(150, 44)) as pilot:
@@ -272,3 +278,240 @@ def test_execution_metric_prefers_observed_peak_concurrency() -> None:
     execution_metric = asyncio.run(exercise())
     assert "OBSERVED PEAK / LIMIT" in execution_metric
     assert "3 / 4" in execution_metric
+
+
+class PartialLiveCollectionRuntime:
+    async def stream(self, spec: RunSpec):  # type: ignore[no-untyped-def]
+        del spec
+        yield EventDraft(
+            EventKind.STAGE_STARTED,
+            "Collecting live SEC and market data for 3 issuers",
+            payload={
+                "stage": "evidence",
+                "progress": 20,
+                "live_collection": {
+                    "requested_tickers": ["AAPL", "MSFT", "NVDA"],
+                },
+            },
+        )
+        yield EventDraft(
+            EventKind.STAGE_COMPLETED,
+            "Live source collection completed with provider gaps",
+            payload={
+                "stage": "evidence",
+                "progress": 70,
+                "live_collection": {
+                    "requested_tickers": ["AAPL", "MSFT", "NVDA"],
+                    "requested_count": 3,
+                    "ready_count": 2,
+                    "failed_count": 1,
+                    "partial": True,
+                    "provider_successes": {"sec": 2, "yfinance": 1},
+                    "provider_failures": {"sec": 1, "yfinance": 1},
+                    "mapping": {
+                        "retrieved_at": "2026-08-13T13:59:00+00:00",
+                    },
+                    "issuers": [
+                        {
+                            "ticker": "AAPL",
+                            "status": "ready",
+                            "providers": {
+                                "sec": {
+                                    "status": "ok",
+                                    "source": "network",
+                                    "retrieved_at": "2026-08-13T14:00:00+00:00",
+                                },
+                                "yfinance": {
+                                    "status": "failed",
+                                    "source": "network",
+                                },
+                            },
+                        },
+                        {
+                            "ticker": "MSFT",
+                            "status": "ready",
+                            "providers": {
+                                "sec": {
+                                    "status": "ok",
+                                    "source": "cache",
+                                    "retrieved_at": "2026-08-13T14:01:00+00:00",
+                                },
+                                "yfinance": {
+                                    "status": "ok",
+                                    "source": "network",
+                                    "retrieved_at": "2026-08-13T14:02:00+00:00",
+                                },
+                            },
+                        },
+                        {"ticker": "NVDA", "status": "failed"},
+                    ],
+                    "failures": [
+                        {
+                            "ticker": "AAPL",
+                            "provider": "yfinance",
+                            "phase": "snapshot",
+                            "error": "market snapshot unavailable",
+                            "retryable": False,
+                            "occurred_at": "2026-08-13T14:00:30+00:00",
+                        },
+                        {
+                            "ticker": "NVDA",
+                            "provider": "sec",
+                            "phase": "issuer",
+                            "error": "issuer facts unavailable",
+                            "retryable": False,
+                            "occurred_at": "2026-08-13T14:01:30+00:00",
+                        },
+                    ],
+                },
+            },
+        )
+
+
+def test_live_mission_controls_are_scrollable_and_reachable() -> None:
+    async def exercise(size: tuple[int, int]) -> None:
+        app = AlphaApp(
+            live_readiness=LiveReadiness(
+                sec_identity_configured=True,
+                yfinance_installed=True,
+                runtime_available=True,
+                analysis_label="RULE-BASED",
+            ),
+            live_runtime_factory=lambda _spec, _tickers: EmptyRuntime(),
+            journal_factory=lambda _: MemoryJournal(),
+        )
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, MissionScreen)
+            screen.query_one("#mode-select", Select).value = "live"
+            await pilot.pause()
+
+            card = screen.query_one("#mission-card", VerticalScroll)
+            readiness = screen.query_one("#readiness-panel", Static)
+            launch = screen.query_one("#launch-run", Button)
+            assert card.region.bottom <= app.size.height
+            assert card.max_scroll_y > 0
+
+            card.scroll_end(animate=False)
+            await pilot.pause()
+            assert card.region.contains_region(readiness.region)
+            assert card.region.contains_region(launch.region)
+            assert not launch.disabled
+            readiness_text = str(readiness.render())
+            assert "SEC: CONFIGURED" in readiness_text
+            assert "MARKET: INSTALLED" in readiness_text
+            assert "RUNTIME: AVAILABLE" in readiness_text
+
+            await pilot.click("#launch-run")
+            await pilot.pause()
+            assert isinstance(app.screen, RunScreen)
+
+    for terminal_size in ((120, 38), (90, 28)):
+        asyncio.run(exercise(terminal_size))
+
+
+def test_partial_live_collection_is_explicit_in_results() -> None:
+    async def exercise() -> tuple[str, str, str, str, str, int]:
+        app = AlphaApp(
+            initial_spec=RunSpec(run_id="partial-live", mode="live", universe_size=3),
+            initial_tickers=("AAPL", "MSFT", "NVDA"),
+            live_runtime_factory=lambda _spec, _tickers: PartialLiveCollectionRuntime(),
+            journal_factory=lambda _: MemoryJournal(),
+        )
+        async with app.run_test(size=(150, 44)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, RunScreen)
+            await asyncio.wait_for(screen.completed.wait(), timeout=2)
+            await pilot.pause()
+            status = screen.query_one("#results-status", Static)
+            return (
+                str(status.render()),
+                str(screen.query_one("#result-coverage", Static).render()),
+                str(screen.query_one("#result-sources", Static).render()),
+                str(screen.query_one("#results-detail", Static).render()),
+                str(screen.query_one("#safety-bar", Static).render()),
+                status.content_region.height,
+            )
+
+    status, coverage, sources, detail, safety, status_height = asyncio.run(exercise())
+    assert "PARTIAL LIVE RESULTS" in status
+    assert "2 of 3 had usable evidence" in status
+    assert "1 issuer failed" in status
+    assert "2026-08-13T14:02:00+00:00" in status
+    assert "AAPL / yfinance: market snapshot unavailable" in status
+    assert "USABLE / REQUESTED" in coverage
+    assert "2 / 3" in coverage
+    assert "LIVE PARTIAL / SEC 2/3 / MARKET 1/3" in sources
+    assert "partial live collection" in detail
+    assert "SYNTHETIC" not in safety
+    assert status_height >= 3
+
+
+class LiveProvenanceRuntime:
+    async def stream(self, spec: RunSpec):  # type: ignore[no-untyped-def]
+        del spec
+        yield EventDraft(
+            EventKind.AGENT_REGISTERED,
+            "Registered ALP research lane",
+            agent_id="live-alp",
+            payload={"role": "Live issuer analyst", "lane": "ALP"},
+        )
+        yield EventDraft(
+            EventKind.EVIDENCE_ADDED,
+            "Added SEC evidence for ALP",
+            agent_id="live-alp",
+            payload={
+                "evidence_id": "ev-live-alp",
+                "title": "ALP annual filing",
+                "source": "SEC",
+                "source_kind": "company_facts",
+                "summary": "Live SEC record",
+                "observed_at": "2024-12-31T00:00:00+00:00",
+                "retrieved_at": "2026-08-13T12:00:00+00:00",
+                "source_url": "https://www.sec.gov/Archives/edgar/data/1/alp-2024.htm",
+                "synthetic": False,
+            },
+        )
+        yield EventDraft(
+            EventKind.CANDIDATE_UPDATED,
+            "Ranked ALP as a research priority",
+            payload={
+                "candidate_id": "ticker:ALP",
+                "ticker": "ALP",
+                "company": "Alpha Logic",
+                "bucket": "advance",
+                "priority_score": 62,
+                "variant_wedge": "Rule-based screen signal",
+                "why_now": "Latest filing evidence is available",
+                "first_rejection": "The screen does not establish a mispricing",
+                "investable_if": "Deeper diligence confirms the signal",
+                "kill_if": "Follow-up evidence invalidates the signal",
+                "next_workflow": "company_tearsheet",
+                "evidence_ids": ["ev-live-alp"],
+                "source_mode": "live",
+                "as_of": "2024-12-31",
+            },
+        )
+
+
+def test_live_candidate_detail_keeps_retrieval_and_source_url() -> None:
+    async def exercise() -> str:
+        app = AlphaApp(
+            initial_spec=RunSpec(run_id="live-provenance", mode="live", universe_size=1),
+            initial_tickers=("ALP",),
+            live_runtime_factory=lambda _spec, _tickers: LiveProvenanceRuntime(),
+            journal_factory=lambda _: MemoryJournal(),
+        )
+        async with app.run_test(size=(150, 44)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, RunScreen)
+            await asyncio.wait_for(screen.completed.wait(), timeout=2)
+            await pilot.pause()
+            return str(screen.query_one("#results-detail", Static).render())
+
+    detail = asyncio.run(exercise())
+    assert "retrieved 2026-08-13T12:00:00+00:00" in detail
+    assert "Source URL: https://www.sec.gov/Archives/edgar/data/1/alp-2024.htm" in detail
