@@ -15,6 +15,56 @@ Screen {
     color: $alpha-text;
 }
 
+
+#automatic-preflight-shell {
+    width: 100%;
+    height: 100%;
+    align: center middle;
+    padding: 1;
+}
+
+#automatic-preflight-card {
+    width: 76;
+    max-width: 100%;
+    height: 100%;
+    max-height: 34;
+    padding: 2 3;
+    background: $alpha-panel;
+    border: round $alpha-danger;
+}
+
+#automatic-preflight-brand {
+    height: 2;
+    color: $alpha-text;
+    text-style: bold;
+}
+
+#automatic-preflight-copy {
+    height: auto;
+    min-height: 5;
+    color: $alpha-text;
+    margin-bottom: 1;
+}
+
+#automatic-preflight-status {
+    height: auto;
+    min-height: 7;
+    padding: 1 2;
+    background: $alpha-panel-raised;
+    border-left: thick $alpha-danger;
+}
+
+#automatic-preflight-next {
+    height: auto;
+    min-height: 4;
+    color: $alpha-muted;
+    margin-top: 1;
+}
+
+#automatic-preflight-actions {
+    height: 3;
+    align-horizontal: right;
+}
 #mission-shell {
     width: 100%;
     height: 100%;
@@ -213,6 +263,29 @@ Button.-primary {
     color: $alpha-text;
 }
 
+
+#universe-shell {
+    height: 100%;
+}
+
+#universe-controls {
+    height: 4;
+    padding: 0 1;
+}
+
+#universe-search {
+    width: 100%;
+}
+
+#universe-summary {
+    height: 3;
+    padding: 0 2 1 2;
+    color: $alpha-muted;
+}
+
+#universe-table {
+    height: 1fr;
+}
 #results-shell {
     height: 100%;
 }
@@ -226,6 +299,15 @@ Button.-primary {
     color: $alpha-text;
 }
 
+
+#results-funnel {
+    height: 4;
+    padding: 0 2;
+    margin-bottom: 1;
+    background: $alpha-panel-raised;
+    border-left: thick $alpha-idea;
+    color: $alpha-text;
+}
 #results-summary {
     height: 5;
     margin-bottom: 1;

@@ -22,8 +22,9 @@ The command fails at the first unsuccessful stage and runs, in order:
 3. Ruff lint across production code, tests, and scripts;
 4. the complete pytest suite with strict configuration and marker validation;
 5. a multi-issuer fan-out/fan-in append/replay cycle with an offline model fixture;
-6. an installed-package import smoke check; and
-7. the module CLI's `--help` path.
+6. a 300-issuer automatic-universe append/replay cycle with deterministic SEC-shaped facts;
+7. an installed-package import smoke check; and
+8. the module CLI's `--help` path.
 
 The verifier resolves the repository root from its own location, disables third-party
 pytest plugin auto-loading, removes ambient SEC identity and pytest options, hides GPUs,
@@ -55,6 +56,7 @@ Print the exact ordered subprocesses without running them:
 | Action and DAG contracts | `.venv/bin/pytest tests/test_actions.py tests/test_dag.py` | Strict action parsing, schema trust, topology, plan hashing, bounds, or tool-policy validation regressed. |
 | Fixed-DAG runtime | `.venv/bin/pytest tests/test_fixed_dag.py tests/test_offline_harness.py tests/test_offline_harness_attribution.py` | Observation binding, bounded parallelism, fan-in ordering, trusted ranking, per-issuer attribution, or lifecycle journaling regressed. |
 | Replay integrity | `.venv/bin/pytest tests/test_journal_integrity.py tests/test_reducer.py tests/test_task_events.py` | Strict JSON loading, canonical hash verification, workflow identity, sequencing, or projection rules regressed. |
+| Automatic-universe runtime | `.venv/bin/pytest tests/test_automatic_harness.py tests/test_automatic_harness_adversarial.py` | Broad-universe coverage, eight-lane admission, source/currency binding, ranking identity, terminal audit rows, isolated failure, or replay integrity regressed. |
 | Debug UI | `.venv/bin/pytest tests/test_tui_debug.py tests/test_tui.py` | Full-stream retention, filtering, counters, exact detail rendering, transcript selection, follow-tail, shortcuts, or narrow-layout behavior regressed. |
 
 These commands intentionally name files instead of relying on markers, so they are easy
@@ -104,6 +106,31 @@ exist:
 
 `JsonlJournal` creates parent directories and opens the event file exclusively. Remove
 or choose a different fixture path before running that exact command again.
+
+## Automatic-universe execution/replay fixture
+
+Run the scale fixture without arguments or retained artifacts:
+
+```bash
+.venv/bin/python scripts/run_automatic_harness.py
+```
+
+The package-owned fixture selects 300 deterministic SEC-mapped issuers, reuses
+source-bound market-screen observations, and feeds SEC-shaped company facts through the
+real automatic runtime and controller. It independently reconstructs journal intervals
+to prove no more than eight screens are active, no lane owns overlapping work, and tool
+events remain nested inside their task lifecycle. Controlled barriers require a measured
+peak of eight for both provider collection and controller analysis.
+
+The self-check also requires exactly eight registered lanes, 300 terminal screen rows
+persisted once, 25 controller-ranked candidate identities, complete candidate citation
+availability, consistent currency and market-page content hashes, zero per-ticker market
+snapshot calls, pure replay equivalence, and a locked canonical results-artifact hash.
+Fixture data is synthetic and the summary labels it accordingly.
+
+Adversarial tests isolate one issuer failure and force below-minimum coverage to fail
+only after journaling one complete 100-row audit snapshot. The default harness never
+loads `.env`, calls the network, or starts a model.
 
 ## What replay verifies
 

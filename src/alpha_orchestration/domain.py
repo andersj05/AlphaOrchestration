@@ -193,7 +193,12 @@ class RunSpec:
         sector = self.sector.strip()
         if not sector:
             raise ValueError("sector must not be empty")
-        universe_minimum, universe_maximum = (1, 8) if self.mode == "live" else (3, 500)
+        if self.mode == "live":
+            universe_minimum, universe_maximum = 1, 8
+        elif self.mode == "automatic_live":
+            universe_minimum, universe_maximum = 100, 500
+        else:
+            universe_minimum, universe_maximum = 3, 500
         if not universe_minimum <= self.universe_size <= universe_maximum:
             raise ValueError(
                 f"universe_size must be between {universe_minimum} and {universe_maximum} for mode {self.mode!r}"

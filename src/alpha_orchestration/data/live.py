@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from alpha_orchestration.data.universe import UniverseMember
 
 from alpha_orchestration.data.cache import ContentAddressedJsonCache, ProviderRequest
 from alpha_orchestration.data.ledger import EvidencePacket, ObservationLedger
@@ -28,6 +31,7 @@ from alpha_orchestration.domain import JsonValue
 
 _TICKER = re.compile(r"^[A-Z0-9][A-Z0-9.\-]{0,19}$")
 MAX_LIVE_TICKERS = 8
+MAX_AUTOMATIC_TICKERS = 500
 
 
 class SecLiveProvider(Protocol):
@@ -101,6 +105,7 @@ class LiveCollection:
     failures: tuple[CollectionFailure, ...]
     mapping_retrieved_at: datetime
     mapping_content_hash: str
+    identity_source_url: str
     configured_provider_slots: int
     observed_peak_provider_requests: int
 
@@ -146,7 +151,7 @@ class LiveCollection:
             "provider_failures": provider_failures,
             "mapping": {
                 "provider": "sec",
-                "source_url": "https://www.sec.gov/files/company_tickers.json",
+                "source_url": self.identity_source_url,
                 "retrieved_at": self.mapping_retrieved_at.isoformat(),
                 "content_hash": self.mapping_content_hash,
             },
@@ -156,6 +161,25 @@ class LiveCollection:
 
 
 def normalize_live_tickers(tickers: Sequence[str]) -> tuple[str, ...]:
+    return _normalize_tickers(tickers, maximum=MAX_LIVE_TICKERS, label="live ticker universe")
+
+
+def normalize_automatic_tickers(tickers: Sequence[str]) -> tuple[str, ...]:
+    """Normalize a controller-discovered universe without weakening ticker validation."""
+
+    return _normalize_tickers(
+        tickers,
+        maximum=MAX_AUTOMATIC_TICKERS,
+        label="automatic live ticker universe",
+    )
+
+
+def _normalize_tickers(
+    tickers: Sequence[str],
+    *,
+    maximum: int,
+    label: str,
+) -> tuple[str, ...]:
     if isinstance(tickers, (str, bytes)) or not isinstance(tickers, Sequence):
         raise ValueError("tickers must be a sequence of strings")
     normalized: list[str] = []
@@ -167,8 +191,8 @@ def normalize_live_tickers(tickers: Sequence[str]) -> tuple[str, ...]:
             raise ValueError(f"invalid ticker: {raw!r}")
         if ticker not in normalized:
             normalized.append(ticker)
-    if not 1 <= len(normalized) <= MAX_LIVE_TICKERS:
-        raise ValueError(f"live ticker universe must contain between 1 and {MAX_LIVE_TICKERS} unique tickers")
+    if not 1 <= len(normalized) <= maximum:
+        raise ValueError(f"{label} must contain between 1 and {maximum} unique tickers")
     return tuple(normalized)
 
 
@@ -239,6 +263,7 @@ class LiveDataCollector:
             failures=tuple(failures),
             mapping_retrieved_at=mapping_at,
             mapping_content_hash=mapping_hash,
+            identity_source_url="https://www.sec.gov/files/company_tickers.json",
             configured_provider_slots=self.provider_slots,
             observed_peak_provider_requests=self._peak_provider_requests,
         )
@@ -248,6 +273,7 @@ class LiveDataCollector:
         issuer: ResolvedIssuer,
         mapping_at: datetime,
         mapping_hash: str,
+        identity_source_url: str = "https://www.sec.gov/files/company_tickers.json",
     ) -> tuple[LiveIssuerEvidence | None, tuple[CollectionFailure, ...]]:
         sec_result, market_result = await asyncio.gather(
             self._company_facts(issuer),
@@ -302,7 +328,7 @@ class LiveDataCollector:
             return None, tuple(failures)
         packet = ledger.evidence_packet([observation.observation_id for observation in selected.values()])
         issues = tuple(f"{issue.code}: {issue.message}" for batch in batches for issue in batch.issues)
-        identity = _identity_evidence(issuer, mapping_at, mapping_hash)
+        identity = _identity_evidence(issuer, mapping_at, mapping_hash, identity_source_url)
         return (
             LiveIssuerEvidence(
                 issuer=issuer,
@@ -371,6 +397,133 @@ class LiveDataCollector:
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("live collector clock must return a timezone-aware datetime")
         return value.astimezone(UTC)
+
+    async def iter_collect_manifest(
+        self,
+        members: Sequence[UniverseMember],
+        *,
+        identity_retrieved_at: datetime,
+        identity_source_url: str,
+        batch_size: int = 25,
+    ) -> AsyncIterator[LiveCollection]:
+        """Collect SEC facts in batches while reusing source-bound screener fields."""
+
+        from alpha_orchestration.data.universe import UniverseMember
+
+        if isinstance(members, (str, bytes)) or not isinstance(members, Sequence):
+            raise ValueError("members must be a sequence of UniverseMember values")
+        selected = tuple(members)
+        if any(not isinstance(member, UniverseMember) for member in selected):
+            raise ValueError("members must contain only UniverseMember values")
+        if not 1 <= batch_size <= 100:
+            raise ValueError("batch_size must be between 1 and 100")
+        normalized = normalize_automatic_tickers(tuple(member.ticker for member in selected))
+        if normalized != tuple(member.ticker for member in selected):
+            raise ValueError("manifest member tickers must be normalized and unique")
+        sec_hashes = {member.sec_content_hash for member in selected}
+        if len(sec_hashes) != 1:
+            raise ValueError("manifest members must share one SEC identity content hash")
+        if not identity_source_url.startswith("https://"):
+            raise ValueError("identity_source_url must be an HTTPS URL")
+
+        for offset in range(0, len(selected), batch_size):
+            batch = selected[offset : offset + batch_size]
+            results = await asyncio.gather(
+                *(
+                    self._collect_manifest_issuer(
+                        member,
+                        identity_retrieved_at,
+                        identity_source_url,
+                    )
+                    for member in batch
+                ),
+                return_exceptions=True,
+            )
+            failures: list[CollectionFailure] = []
+            evidence_rows: list[LiveIssuerEvidence] = []
+            for member, result in zip(batch, results, strict=True):
+                if isinstance(result, Exception):
+                    failures.append(self._failure(member.ticker, "sec", "issuer_collection", _safe_error(result)))
+                    continue
+                evidence, issuer_failures = result
+                failures.extend(issuer_failures)
+                if evidence is not None:
+                    evidence_rows.append(evidence)
+            yield LiveCollection(
+                requested_tickers=tuple(member.ticker for member in batch),
+                issuers=tuple(evidence_rows),
+                failures=tuple(failures),
+                mapping_retrieved_at=identity_retrieved_at,
+                mapping_content_hash=batch[0].sec_content_hash,
+                identity_source_url=identity_source_url,
+                configured_provider_slots=self.provider_slots,
+                observed_peak_provider_requests=self._peak_provider_requests,
+            )
+
+    async def _collect_manifest_issuer(
+        self,
+        member: UniverseMember,
+        identity_retrieved_at: datetime,
+        identity_source_url: str,
+    ) -> tuple[LiveIssuerEvidence | None, tuple[CollectionFailure, ...]]:
+        from alpha_orchestration.data.universe_mapping import manifest_market_batch
+
+        issuer = ResolvedIssuer(member.ticker, member.cik, member.company)
+        try:
+            sec_payload, sec_at, sec_source = await self._company_facts(issuer)
+        except Exception as exc:
+            return None, (self._failure(member.ticker, "sec", "company_facts", _safe_error(exc)),)
+        try:
+            sec_batch = _canonicalize_sec_batch(
+                map_sec_company_facts(sec_payload, retrieved_at=sec_at, ticker=member.ticker),
+                issuer,
+            )
+        except Exception as exc:
+            return None, (self._failure(member.ticker, "sec", "normalization", _safe_error(exc)),)
+        market_batch = manifest_market_batch(member)
+        statuses: dict[str, Mapping[str, JsonValue]] = {
+            "sec": {
+                "status": "ok",
+                "source": sec_source,
+                "retrieved_at": sec_at.isoformat(),
+            },
+            "yfinance": {
+                "status": "ok",
+                "source": "universe_manifest",
+                "retrieved_at": member.market_retrieved_at.isoformat(),
+            },
+        }
+        batches = [sec_batch, market_batch]
+        ledger = ObservationLedger(batches)
+        selected = _select_analysis_observations(ledger, issuer)
+        if "revenue" not in selected:
+            failure = self._failure(
+                member.ticker,
+                "sec",
+                "evidence_selection",
+                "no comparable annual revenue fact",
+            )
+            return None, (failure,)
+        packet = ledger.evidence_packet([observation.observation_id for observation in selected.values()])
+        issues = tuple(f"{issue.code}: {issue.message}" for batch in batches for issue in batch.issues)
+        identity = _identity_evidence(
+            issuer,
+            identity_retrieved_at,
+            member.sec_content_hash,
+            identity_source_url,
+        )
+        return (
+            LiveIssuerEvidence(
+                issuer=issuer,
+                packet=packet,
+                identity_evidence=identity,
+                observation_ids={name: observation.observation_id for name, observation in selected.items()},
+                observations_by_name=dict(selected),
+                provider_status=statuses,
+                normalization_issues=issues,
+            ),
+            (),
+        )
 
 
 def _parse_company_tickers(payload: Mapping[str, Any]) -> dict[str, ResolvedIssuer]:
@@ -471,7 +624,12 @@ def _select_analysis_observations(
     return selected
 
 
-def _identity_evidence(issuer: ResolvedIssuer, retrieved_at: datetime, mapping_hash: str) -> EvidenceRecord:
+def _identity_evidence(
+    issuer: ResolvedIssuer,
+    retrieved_at: datetime,
+    mapping_hash: str,
+    source_url: str,
+) -> EvidenceRecord:
     locator: dict[str, JsonValue] = {
         "ticker": issuer.ticker,
         "cik": issuer.cik,
@@ -483,7 +641,7 @@ def _identity_evidence(issuer: ResolvedIssuer, retrieved_at: datetime, mapping_h
         provider=DataProvider.SEC,
         source_kind="company_ticker_identity",
         source_locator=locator,
-        source_url="https://www.sec.gov/files/company_tickers.json",
+        source_url=source_url,
         observed_at=retrieved_at,
         retrieved_at=retrieved_at,
         content_hash=canonical_content_hash(locator),
