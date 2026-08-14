@@ -1,13 +1,17 @@
 # Getting started
 
-The current milestone has two offline entry points:
+The current milestone has two deterministic offline entry points and one explicit live
+path:
 
 - the synthetic terminal application, which exercises the event reducer, journal, replay,
   Overview, Results, and Debug / Journal tabs; and
 - a deterministic fixed-DAG harness, which exercises three parallel issuer branches,
   normalized evidence binding, deterministic finance metrics and ranking, a validator
   fan-in, typed candidate projection, lifecycle hashes, journal persistence, and replay
-  equivalence without KernelCubed or network access.
+  equivalence without KernelCubed or network access; and
+- a rule-based live bridge for an operator-supplied ticker universe, with explicit SEC
+  and yfinance collection, normalized evidence, bounded issuer analysis, and trusted
+  controller-owned ranking.
 
 ## Install
 
@@ -85,7 +89,8 @@ Each branch binds offline normalized revenue and net-income observations to
 but cannot alter controller-owned identities or ranks. Its per-issuer citation list must
 exactly match that issuer's evidence packet before projection into the typed candidate.
 This proves attribution, not semantic entailment. The harness-owned projector is the
-offline UI/replay prototype contract, not yet the live-provider production bridge.
+offline UI/replay fixture contract and remains separate from the rule-based live
+projection.
 
 ## Artifacts, integrity, and replay
 
@@ -107,23 +112,51 @@ Capture a deterministic SVG of the completed Overview dashboard for visual QA:
 .venv/bin/python scripts/capture_tui.py artifacts/tui-demo.svg
 ```
 
-## Optional live data adapters
+## Run the rule-based live prototype
 
-Install yfinance only when explicitly working on the live data plane:
+Add yfinance to an existing development environment, or install both extras together:
 
 ```bash
 .venv/bin/pip install -e ".[data]"
+# New environment alternative:
+.venv/bin/pip install -e ".[dev,data]"
 ```
 
-SEC JSON access requires a descriptive identity with contact information:
+SEC JSON access requires a descriptive identity with contact information. Put it in the
+repository-local `.env` file (or export the same variable in the shell):
+
+```dotenv
+ALPHA_SEC_USER_AGENT="AlphaOrchestration your-email@example.com"
+```
+
+Launch the live Results UI for an explicit universe of one to eight tickers:
 
 ```bash
-export ALPHA_SEC_USER_AGENT="AlphaOrchestration your-email@example.com"
+.venv/bin/python -m alpha_orchestration --live --tickers AAPL,MSFT,NVDA
 ```
 
-`SecDataClient` and `YFinanceClient` calls are explicit. Their mapper functions turn
-provider payloads into normalized offline domain records, but neither the synthetic TUI
-nor deterministic finance tools fetch provider data implicitly.
+Use plain mode for streamed event output and a ranked terminal summary:
+
+```bash
+.venv/bin/python -m alpha_orchestration --live --tickers AAPL,MSFT,NVDA --plain
+```
+
+This prototype is rule-based: providers supply evidence while controller-owned finance
+tools calculate comparable metrics and ranks. It is fail-closed and never substitutes
+synthetic fixture data. Provider failures remain visible, issuers without trusted SEC
+evidence are excluded, and the run fails if no requested issuer is eligible.
+
+Normalized evidence carries stable source IDs, provider locators, retrieval times, and
+content hashes into the append-only run journal at
+`artifacts/runs/<run-id>/events.jsonl`. Provider responses use an integrity-checked,
+content-addressed cache at `artifacts/live-cache/`; the default freshness window is six
+hours, with seven days for the official SEC ticker map. Override these roots with
+`--artifacts` and `--live-cache`. Keep both directories local because they contain
+downloaded provider data and research artifacts.
+
+The [yfinance documentation](https://ranaroussi.github.io/yfinance/) states that the
+library is intended for research and education and Yahoo Finance data is intended for
+personal use. Review its legal disclaimer and Yahoo's terms before using the live path.
 
 ## Verify
 
@@ -133,10 +166,15 @@ Run the complete deterministic offline gate:
 .venv/bin/python scripts/verify.py
 ```
 
-This one command runs Ruff lint, pytest with strict configuration and markers, the
-fixed-DAG execution/replay fixture, and lightweight installed-package and CLI smoke
-checks. It does not load `.env`, invoke a live provider, start KernelCubed, or require a
-GPU. Formatting remains a documented follow-up gate because the existing tree needs a
+This command runs seven stages: project-memory integrity, a Python-process network-guard
+self-test, Ruff lint, pytest with strict configuration and markers, the fixed-DAG
+execution/replay fixture, and lightweight installed-package and CLI smoke checks. The
+default code path does not load `.env`, invoke a live provider, start KernelCubed, or
+require a GPU.
+
+The socket/DNS guard is defense for verifier-launched Python processes, not an OS network
+namespace or firewall; see [Testing harness](testing-harness.md) for its exact boundary.
+Formatting remains a documented follow-up gate because the existing tree needs a
 separate one-time Ruff formatting cleanup.
 
 Run the major slices independently while developing:

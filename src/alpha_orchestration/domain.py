@@ -165,11 +165,7 @@ class CandidateFinancial:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"candidate financial {name} must not be empty")
-        if (
-            isinstance(self.value, bool)
-            or not isinstance(self.value, (int, float))
-            or not isfinite(self.value)
-        ):
+        if isinstance(self.value, bool) or not isinstance(self.value, (int, float)) or not isfinite(self.value):
             raise ValueError("candidate financial value must be finite")
         if any(not isinstance(source_id, str) or not source_id.strip() for source_id in self.source_ids):
             raise ValueError("candidate financial source IDs must not be empty")
@@ -197,8 +193,11 @@ class RunSpec:
         sector = self.sector.strip()
         if not sector:
             raise ValueError("sector must not be empty")
-        if not 3 <= self.universe_size <= 500:
-            raise ValueError("universe_size must be between 3 and 500")
+        universe_minimum, universe_maximum = (1, 8) if self.mode == "live" else (3, 500)
+        if not universe_minimum <= self.universe_size <= universe_maximum:
+            raise ValueError(
+                f"universe_size must be between {universe_minimum} and {universe_maximum} for mode {self.mode!r}"
+            )
         if not 1 <= self.agent_budget <= 8:
             raise ValueError("agent_budget must be between 1 and 8")
         if not 1 <= self.active_slots <= self.agent_budget:
@@ -269,6 +268,8 @@ class Evidence:
     summary: str
     observed_at: str
     synthetic: bool = False
+    retrieved_at: str = "not provided"
+    source_url: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,9 +318,7 @@ class Candidate:
             raise ValueError("candidate as_of must not be empty")
         if any(not isinstance(gap, str) or not gap.strip() for gap in self.evidence_gaps):
             raise ValueError("candidate evidence gaps must not be empty")
-        financial_source_ids = {
-            source_id for financial in self.financials for source_id in financial.source_ids
-        }
+        financial_source_ids = {source_id for financial in self.financials for source_id in financial.source_ids}
         if not financial_source_ids.issubset(self.evidence_ids):
             raise ValueError("candidate financial sources must be present in evidence IDs")
 

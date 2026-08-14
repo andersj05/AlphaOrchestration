@@ -72,6 +72,15 @@ def _optional_nonempty_string(payload: dict[str, Any], key: str, default: str) -
     return _nonempty_string(payload, key)
 
 
+def _optional_string(payload: dict[str, Any], key: str, default: str) -> str:
+    if key not in payload:
+        return default
+    value = payload[key]
+    if not isinstance(value, str):
+        raise StateInvariantError(f"event payload {key!r} must be a string")
+    return value.strip() or default
+
+
 def _string_tuple(payload: dict[str, Any], key: str) -> tuple[str, ...]:
     raw_values = payload.get(key, [])
     if not isinstance(raw_values, list):
@@ -79,9 +88,7 @@ def _string_tuple(payload: dict[str, Any], key: str) -> tuple[str, ...]:
     values: list[str] = []
     for raw_value in raw_values:
         if not isinstance(raw_value, str) or not raw_value.strip():
-            raise StateInvariantError(
-                f"event payload {key!r} must contain non-empty strings"
-            )
+            raise StateInvariantError(f"event payload {key!r} must contain non-empty strings")
         values.append(raw_value.strip())
     if len(values) != len(set(values)):
         raise StateInvariantError(f"event payload {key!r} must contain unique values")
@@ -122,9 +129,7 @@ def _task(state: RunState, event: RunEvent) -> TaskState:
     except KeyError as exc:
         raise StateInvariantError(f"unknown task: {task_id}") from exc
     if event.agent_id is not None and event.agent_id != task.agent_id:
-        raise StateInvariantError(
-            f"event agent {event.agent_id!r} does not own task {task_id!r}"
-        )
+        raise StateInvariantError(f"event agent {event.agent_id!r} does not own task {task_id!r}")
     return task
 
 
@@ -136,8 +141,7 @@ def _transition(
     if task.status not in allowed:
         expected = ", ".join(sorted(status.value for status in allowed))
         raise StateInvariantError(
-            f"invalid {event.kind.value} transition for task {task.task_id!r}: "
-            f"{task.status.value}; expected {expected}"
+            f"invalid {event.kind.value} transition for task {task.task_id!r}: {task.status.value}; expected {expected}"
         )
 
 
@@ -165,9 +169,7 @@ def _planned_tasks(payload: dict[str, Any]) -> dict[str, TaskState]:
         dependencies: list[str] = []
         for dependency in raw_dependencies:
             if not isinstance(dependency, str) or not dependency.strip():
-                raise StateInvariantError(
-                    f"task {task_id!r} dependencies must be non-empty strings"
-                )
+                raise StateInvariantError(f"task {task_id!r} dependencies must be non-empty strings")
             dependencies.append(dependency.strip())
         if len(dependencies) != len(set(dependencies)):
             raise StateInvariantError(f"task {task_id!r} has duplicate dependencies")
@@ -176,9 +178,7 @@ def _planned_tasks(payload: dict[str, Any]) -> dict[str, TaskState]:
             raise StateInvariantError(f"task {task_id!r} required must be a boolean")
         allow_failed_dependencies = raw_task.get("allow_failed_dependencies", False)
         if not isinstance(allow_failed_dependencies, bool):
-            raise StateInvariantError(
-                f"task {task_id!r} allow_failed_dependencies must be a boolean"
-            )
+            raise StateInvariantError(f"task {task_id!r} allow_failed_dependencies must be a boolean")
         tasks[task_id] = TaskState(
             task_id=task_id,
             agent_id=agent_id,
@@ -190,16 +190,12 @@ def _planned_tasks(payload: dict[str, Any]) -> dict[str, TaskState]:
     for task in tasks.values():
         unknown = sorted(set(task.depends_on) - tasks.keys())
         if unknown:
-            raise StateInvariantError(
-                f"task {task.task_id!r} has unknown dependencies: {', '.join(unknown)}"
-            )
+            raise StateInvariantError(f"task {task.task_id!r} has unknown dependencies: {', '.join(unknown)}")
 
     pending = set(tasks)
     while pending:
         ready = {
-            task_id
-            for task_id in pending
-            if all(dependency not in pending for dependency in tasks[task_id].depends_on)
+            task_id for task_id in pending if all(dependency not in pending for dependency in tasks[task_id].depends_on)
         }
         if not ready:
             raise StateInvariantError("workflow task dependencies contain a cycle")
@@ -293,15 +289,9 @@ def reduce_event(state: RunState, event: RunEvent) -> RunState:
     if event.kind is EventKind.WORKFLOW_COMPLETED:
         if state.workflow_id is None:
             raise StateInvariantError("workflow_completed requires a planned workflow")
-        incomplete = sorted(
-            task.task_id
-            for task in state.tasks.values()
-            if task.status not in _TASK_TERMINAL
-        )
+        incomplete = sorted(task.task_id for task in state.tasks.values() if task.status not in _TASK_TERMINAL)
         if incomplete:
-            raise StateInvariantError(
-                f"workflow completed with non-terminal tasks: {', '.join(incomplete)}"
-            )
+            raise StateInvariantError(f"workflow completed with non-terminal tasks: {', '.join(incomplete)}")
         return next_state
 
     task_events = {
@@ -319,17 +309,13 @@ def reduce_event(state: RunState, event: RunEvent) -> RunState:
         EventKind.TOOL_REJECTED,
         EventKind.TOOL_FAILED,
     }
-    if event.kind in task_events or (
-        event.kind in task_tool_events and "task_id" in payload
-    ):
+    if event.kind in task_events or (event.kind in task_tool_events and "task_id" in payload):
         task = _task(state, event)
         updated = task
 
         if event.kind is EventKind.TASK_STARTED:
             _transition(task, event, frozenset({TaskStatus.QUEUED}))
-            allowed_dependency_states = (
-                _TASK_TERMINAL if task.allow_failed_dependencies else _TASK_SUCCESS
-            )
+            allowed_dependency_states = _TASK_TERMINAL if task.allow_failed_dependencies else _TASK_SUCCESS
             blocked = sorted(
                 dependency
                 for dependency in task.depends_on
@@ -337,8 +323,7 @@ def reduce_event(state: RunState, event: RunEvent) -> RunState:
             )
             if blocked:
                 raise StateInvariantError(
-                    f"task {task.task_id!r} started before dependencies completed: "
-                    f"{', '.join(blocked)}"
+                    f"task {task.task_id!r} started before dependencies completed: {', '.join(blocked)}"
                 )
             updated = replace(task, status=TaskStatus.RUNNING, error=None)
         elif event.kind is EventKind.MODEL_TURN_STARTED:
@@ -387,11 +372,7 @@ def reduce_event(state: RunState, event: RunEvent) -> RunState:
             partial = payload.get("partial", False)
             if not isinstance(partial, bool):
                 raise StateInvariantError("task_completed partial must be a boolean")
-            error = (
-                str(payload["error"])
-                if "error" in payload
-                else task.error if partial else None
-            )
+            error = str(payload["error"]) if "error" in payload else task.error if partial else None
             updated = replace(
                 task,
                 status=TaskStatus.PARTIAL if partial else TaskStatus.COMPLETE,
@@ -422,17 +403,9 @@ def reduce_event(state: RunState, event: RunEvent) -> RunState:
             waiting_for_tool = event.kind is EventKind.TOOL_STARTED
             agents[task.agent_id] = replace(
                 current_agent,
-                status=(
-                    AgentStatus.WAITING_TOOL
-                    if waiting_for_tool
-                    else AgentStatus.RUNNING
-                ),
+                status=(AgentStatus.WAITING_TOOL if waiting_for_tool else AgentStatus.RUNNING),
                 current_task=event.message,
-                tool_calls=(
-                    current_agent.tool_calls + 1
-                    if waiting_for_tool
-                    else current_agent.tool_calls
-                ),
+                tool_calls=(current_agent.tool_calls + 1 if waiting_for_tool else current_agent.tool_calls),
             )
         return replace(next_state, tasks=tasks, agents=agents)
 
@@ -515,6 +488,8 @@ def reduce_event(state: RunState, event: RunEvent) -> RunState:
                 summary=str(_require(payload, "summary")),
                 observed_at=str(_require(payload, "observed_at")),
                 synthetic=bool(payload.get("synthetic", False)),
+                retrieved_at=_optional_string(payload, "retrieved_at", "not provided"),
+                source_url=_optional_string(payload, "source_url", ""),
             )
             evidence_map = dict(state.evidence)
             evidence_map[evidence.evidence_id] = evidence
@@ -542,16 +517,12 @@ def reduce_event(state: RunState, event: RunEvent) -> RunState:
                 next_workflow=_nonempty_string(payload, "next_workflow"),
                 evidence_ids=_string_tuple(payload, "evidence_ids"),
                 financials=_candidate_financials(payload),
-                confidence=CandidateConfidence(
-                    str(payload.get("confidence", CandidateConfidence.NOT_ASSESSED.value))
-                ),
+                confidence=CandidateConfidence(str(payload.get("confidence", CandidateConfidence.NOT_ASSESSED.value))),
                 data_quality=CandidateDataQuality(
                     str(payload.get("data_quality", CandidateDataQuality.NOT_ASSESSED.value))
                 ),
                 as_of=_optional_nonempty_string(payload, "as_of", "not provided"),
-                source_mode=CandidateSourceMode(
-                    str(payload.get("source_mode", CandidateSourceMode.UNSPECIFIED.value))
-                ),
+                source_mode=CandidateSourceMode(str(payload.get("source_mode", CandidateSourceMode.UNSPECIFIED.value))),
                 evidence_gaps=_string_tuple(payload, "evidence_gaps"),
             )
         except (TypeError, ValueError) as exc:

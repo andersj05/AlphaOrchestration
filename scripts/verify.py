@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+OFFLINE_GUARD_PATH = REPOSITORY_ROOT / "scripts" / "offline_guard"
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +27,14 @@ def build_checks(python: str = sys.executable) -> tuple[Check, ...]:
     """Return the complete gate without executing it."""
 
     return (
+        Check(
+            "Project memory integrity",
+            (python, str(REPOSITORY_ROOT / "scripts" / "check_project_memory.py")),
+        ),
+        Check(
+            "Offline network isolation",
+            (python, str(REPOSITORY_ROOT / "scripts" / "check_offline_network.py")),
+        ),
         Check("Ruff lint", (python, "-m", "ruff", "check", ".")),
         Check(
             "Strict offline test suite",
@@ -65,12 +74,14 @@ def verification_environment(source: Mapping[str, str] | None = None) -> dict[st
         environment.pop(name, None)
     environment.update(
         {
+            "ALPHA_OFFLINE_GUARD_ACTIVE": "0",
             "ALPHA_VERIFY_OFFLINE": "1",
             "CUDA_VISIBLE_DEVICES": "",
             "HF_HUB_OFFLINE": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
             "PYTHONHASHSEED": "0",
             "PYTHONNOUSERSITE": "1",
+            "PYTHONPATH": str(OFFLINE_GUARD_PATH),
             "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
             "TRANSFORMERS_OFFLINE": "1",
         }

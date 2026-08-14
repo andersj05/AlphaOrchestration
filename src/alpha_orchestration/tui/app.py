@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -63,6 +65,57 @@ from alpha_orchestration.tui.debug import (
 
 JournalFactory = Callable[[RunSpec], EventJournal]
 RuntimeFactory = Callable[[RunSpec], OrchestratorRuntime]
+LiveRuntimeFactory = Callable[[RunSpec, tuple[str, ...]], OrchestratorRuntime]
+
+
+@dataclass(frozen=True, slots=True)
+class LiveReadiness:
+    """Non-secret, non-network preflight facts shown before a live run."""
+
+    sec_identity_configured: bool = False
+    yfinance_installed: bool = False
+    runtime_available: bool = False
+    analysis_label: str = "DETERMINISTIC RULES"
+    blocker: str | None = None
+
+    @property
+    def ready(self) -> bool:
+        return (
+            self.sec_identity_configured and self.yfinance_installed and self.runtime_available and self.blocker is None
+        )
+
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Mapping[str, object],
+        *,
+        runtime_available: bool = True,
+        analysis_label: str = "DETERMINISTIC RULES",
+        blocker: str | None = None,
+    ) -> LiveReadiness:
+        return cls(
+            sec_identity_configured=value.get("sec_identity_configured") is True,
+            yfinance_installed=value.get("yfinance_installed") is True,
+            runtime_available=runtime_available,
+            analysis_label=analysis_label,
+            blocker=blocker,
+        )
+
+
+_TICKER_PATTERN = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
+
+
+def normalize_tickers(value: str) -> tuple[str, ...]:
+    """Normalize a comma-separated public-equity universe, preserving input order."""
+
+    raw = tuple(item.strip().upper() for item in value.split(",") if item.strip())
+    tickers = tuple(dict.fromkeys(raw))
+    if not 1 <= len(tickers) <= 8:
+        raise ValueError("live runs require between 1 and 8 unique tickers")
+    invalid = tuple(ticker for ticker in tickers if _TICKER_PATTERN.fullmatch(ticker) is None)
+    if invalid:
+        raise ValueError(f"invalid ticker format: {', '.join(invalid)}")
+    return tickers
 
 
 STAGE_LABELS = {
@@ -119,20 +172,34 @@ def _readable_token(value: str) -> str:
 class HelpScreen(ModalScreen[None]):
     BINDINGS = [Binding("escape", "dismiss", "Close", show=False)]
 
+    def __init__(self, mode: str) -> None:
+        super().__init__()
+        self.mode = mode
+
     def compose(self) -> ComposeResult:
+        if self.mode == "live":
+            posture = (
+                "This run requests live SEC and market data. CONFIGURED means a local prerequisite "
+                "exists; provider access is verified only by timestamped run evidence. Partial "
+                "source failures remain visible in Results."
+            )
+        else:
+            posture = (
+                "This fixture uses offline synthetic records, has no live-source readiness, and "
+                "makes no claim about real companies."
+            )
         with Container(id="help-dialog"):
             yield Static("ALPHA / CONTROLS", id="help-title")
             yield Static(
                 "[b]Space[/b]  Pause or resume the event stream\n"
                 "[b]O / V / D[/b]  Overview / results / debug journal\n"
                 "[b]Enter[/b]  Inspect the selected candidate\n"
-                "[b]C[/b]      Cancel and drain the run\n"
+                "[b]C[/b]      Stop outstanding work\n"
                 "[b]R[/b]      Restart with the same mandate\n"
                 "[b]N[/b]      Create a new mandate\n"
                 "[b]Q[/b]      Quit\n\n"
-                "Results rank the next diligence step, not expected return. The demo "
-                "uses offline synthetic fixtures, has no live-source readiness, and "
-                "does not issue investment recommendations.",
+                "Results rank the next diligence step, not expected return, and do not "
+                f"issue investment recommendations.\n\n{posture}",
                 markup=True,
             )
             yield Button("CLOSE", id="close-help", variant="primary")
@@ -151,11 +218,26 @@ class MissionScreen(Screen[None]):
         Binding("enter", "start_run", "Launch", show=False),
     ]
 
+    def __init__(
+        self,
+        initial_spec: RunSpec | None = None,
+        initial_tickers: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__()
+        self.initial_spec = initial_spec or RunSpec()
+        self.initial_tickers = initial_tickers
+        self._last_mode = "live" if self.initial_spec.mode == "live" else "synthetic_demo"
+
     def compose(self) -> ComposeResult:
-        with Container(id="mission-shell"), Vertical(id="mission-card"):
+        initial_mode = "live" if self.initial_spec.mode == "live" else "synthetic_demo"
+        initial_universe = (
+            ", ".join(self.initial_tickers) if initial_mode == "live" else str(self.initial_spec.universe_size)
+        )
+
+        with Container(id="mission-shell"), VerticalScroll(id="mission-card"):
             yield Static("ALPHA / ORCHESTRATION", id="mission-brand")
             yield Static(
-                "LOCAL-FIRST RESEARCH OPERATIONS  ·  SYNTHETIC PROTOTYPE",
+                "LOCAL-FIRST RESEARCH OPERATIONS  |  CHOOSE DATA POSTURE",
                 id="mission-kicker",
             )
             yield Static(
@@ -165,35 +247,54 @@ class MissionScreen(Screen[None]):
                 id="mission-copy",
                 markup=True,
             )
+            yield Label("DATA MODE", classes="field-label")
+            yield Select(
+                [
+                    ("Fixture - offline synthetic", "synthetic_demo"),
+                    ("Live - SEC + market data", "live"),
+                ],
+                value=initial_mode,
+                allow_blank=False,
+                id="mode-select",
+            )
             yield Label("SECTOR / THEME", classes="field-label")
-            yield Input(value="Semiconductors", id="sector-input")
+            yield Input(value=self.initial_spec.sector, id="sector-input")
             with Horizontal(classes="field-row"):
                 with Vertical(classes="field-block"):
                     yield Label("RESEARCH DEPTH", classes="field-label")
                     yield Select(
                         [("Quick scan", "quick"), ("Standard", "standard"), ("Deep", "deep")],
-                        value="standard",
+                        value=self.initial_spec.depth.value,
+                        allow_blank=False,
                         id="depth-select",
                     )
                 with Vertical(classes="field-block"):
-                    yield Label("UNIVERSE SIZE", classes="field-label")
-                    yield Input(value="18", id="universe-input")
+                    yield Label("UNIVERSE SIZE", id="universe-label", classes="field-label")
+                    yield Input(value=initial_universe, id="universe-input")
             with Horizontal(id="mission-stats"):
-                yield Static("[dim]RESEARCH ROLES[/dim]\n[b]8[/b]", classes="mission-stat")
+                yield Static("", id="mission-universe-stat", classes="mission-stat")
                 yield Static("[dim]SLOT LIMIT[/dim]\n[b]4 MAX[/b]", classes="mission-stat")
-                yield Static("[dim]DATA MODE[/dim]\n[b]OFFLINE[/b]", classes="mission-stat")
+                yield Static("", id="mission-mode-stat", classes="mission-stat")
             yield Static(
-                "[b #E3B341]SYNTHETIC REPLAY[/b #E3B341]  No live sources or model "
-                "execution. The slot limit is configuration, not measured concurrency.",
-                id="demo-notice",
+                "",
+                id="readiness-panel",
                 markup=True,
             )
             with Horizontal(id="mission-actions"):
-                yield Button("LAUNCH RESEARCH RUN", id="launch-run", variant="primary")
+                yield Button("LAUNCH FIXTURE RUN", id="launch-run", variant="primary")
                 yield Button("QUIT", id="quit", variant="default")
 
     def on_mount(self) -> None:
+        self._sync_mode(initial=True)
         self.query_one("#sector-input", Input).focus()
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "mode-select":
+            self._sync_mode()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "universe-input":
+            self._sync_mode(initial=True)
 
     def action_quit_app(self) -> None:
         self.app.exit()
@@ -215,14 +316,83 @@ class MissionScreen(Screen[None]):
         sector = self.query_one("#sector-input", Input).value.strip()
         raw_universe = self.query_one("#universe-input", Input).value.strip()
         depth_select = self.query_one("#depth-select", Select)
+        mode = str(self.query_one("#mode-select", Select).value)
+        tickers: tuple[str, ...] = ()
         try:
-            universe_size = int(raw_universe)
             depth = ResearchDepth(str(depth_select.value))
-            spec = RunSpec(sector=sector, depth=depth, universe_size=universe_size)
+            if mode == "live":
+                readiness = cast("AlphaApp", self.app).live_readiness
+                if not readiness.ready:
+                    raise ValueError(readiness.blocker or "live prerequisites are not configured")
+                tickers = normalize_tickers(raw_universe)
+                agent_budget = min(8, max(2, len(tickers) + 1))
+                spec = RunSpec(
+                    sector=sector,
+                    depth=depth,
+                    universe_size=len(tickers),
+                    agent_budget=agent_budget,
+                    active_slots=min(4, agent_budget),
+                    mode="live",
+                )
+            else:
+                spec = RunSpec(
+                    sector=sector,
+                    depth=depth,
+                    universe_size=int(raw_universe),
+                    mode="synthetic_demo",
+                )
         except (TypeError, ValueError) as exc:
             self.notify(str(exc), severity="error", timeout=4)
             return
-        cast("AlphaApp", self.app).launch_run(spec)
+        try:
+            cast("AlphaApp", self.app).launch_run(spec, tickers=tickers)
+        except RuntimeError as exc:
+            self.notify(str(exc), severity="error", timeout=6)
+
+    def _sync_mode(self, *, initial: bool = False) -> None:
+        mode = str(self.query_one("#mode-select", Select).value)
+        live = mode == "live"
+        universe_input = self.query_one("#universe-input", Input)
+        if not initial and mode != self._last_mode:
+            if live:
+                universe_input.value = ", ".join(self.initial_tickers) or "AAPL, MSFT, NVDA"
+            else:
+                default_size = self.initial_spec.universe_size if self.initial_spec.mode != "live" else 18
+                universe_input.value = str(default_size)
+            self._last_mode = mode
+        launch = self.query_one("#launch-run", Button)
+        if live:
+            readiness = cast("AlphaApp", self.app).live_readiness
+            self.query_one("#universe-label", Label).update("TICKERS | 1-8, COMMA-SEPARATED")
+            try:
+                universe_value = f"{len(normalize_tickers(universe_input.value))} TICKERS"
+            except ValueError:
+                universe_value = "CHECK INPUT"
+            sec = "CONFIGURED" if readiness.sec_identity_configured else "MISSING IDENTITY"
+            market = "INSTALLED" if readiness.yfinance_installed else "MISSING PACKAGE"
+            runtime = "AVAILABLE" if readiness.runtime_available else "UNAVAILABLE"
+            blocker = f"\n[#FF6B6B]{escape(readiness.blocker)}[/#FF6B6B]" if readiness.blocker else ""
+            self.query_one("#readiness-panel", Static).update(
+                f"[b #54D6FF]LIVE PREFLIGHT[/b #54D6FF]  SEC: {sec}  |  MARKET: {market}  |  "
+                f"RUNTIME: {runtime}\n[dim]Analysis: {escape(readiness.analysis_label)}. "
+                f"Provider access is verified only during the run.[/dim]{blocker}"
+            )
+            self.query_one("#mission-mode-stat", Static).update("[dim]DATA MODE[/dim]\n[b #54D6FF]LIVE[/b #54D6FF]")
+            launch.label = "LAUNCH LIVE RESEARCH"
+            launch.disabled = not readiness.ready
+        else:
+            self.query_one("#universe-label", Label).update("UNIVERSE SIZE")
+            universe_value = universe_input.value.strip() or "CHECK INPUT"
+            self.query_one("#readiness-panel", Static).update(
+                "[b #E3B341]FIXTURE / SYNTHETIC[/b #E3B341]  Offline deterministic records; "
+                "no network access and no claims about real companies."
+            )
+            self.query_one("#mission-mode-stat", Static).update("[dim]DATA MODE[/dim]\n[b #E3B341]FIXTURE[/b #E3B341]")
+            launch.label = "LAUNCH FIXTURE RUN"
+            launch.disabled = False
+        self.query_one("#mission-universe-stat", Static).update(
+            f"[dim]REQUESTED UNIVERSE[/dim]\n[b]{escape(universe_value)}[/b]"
+        )
 
 
 class RunScreen(Screen[None]):
@@ -510,7 +680,13 @@ class RunScreen(Screen[None]):
             RunStatus.CANCELLED: "#8293A7",
             RunStatus.FAILED: "#FF6B6B",
         }[state.status]
-        mode_label = _readable_token(state.spec.mode)
+        mode_label = (
+            "LIVE DATA"
+            if state.spec.mode == "live"
+            else "FIXTURE / SYNTHETIC"
+            if state.spec.mode == "synthetic_demo"
+            else _readable_token(state.spec.mode)
+        )
         self.query_one("#top-banner", Static).update(
             f"[b]ALPHA / ORCHESTRATION[/b]   [#E3B341]{escape(mode_label)}[/#E3B341]   "
             f"[b]{escape(state.spec.sector.upper())}[/b]   "
@@ -585,7 +761,88 @@ class RunScreen(Screen[None]):
             f"TRIAGE ONLY  ·  {posture}  ·  HUMAN REVIEW REQUIRED BEFORE ANY ACTION"
         )
 
+    def _live_collection(self) -> Mapping[str, object] | None:
+        for event in reversed(self._events):
+            value = event.payload.get("live_collection")
+            if isinstance(value, dict):
+                return value
+        return None
+
+    @staticmethod
+    def _collection_count(collection: Mapping[str, object], key: str) -> int | None:
+        value = collection.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
+
+    def _live_source_summary(self, collection: Mapping[str, object]) -> str:
+        requested = self._collection_count(collection, "requested_count")
+        ready = self._collection_count(collection, "ready_count")
+        if requested is None or ready is None:
+            return "LIVE COLLECTION IN PROGRESS"
+
+        posture = "LIVE PARTIAL" if collection.get("partial") is True else "LIVE COLLECTED"
+        provider_counts = collection.get("provider_successes")
+        if not isinstance(provider_counts, dict):
+            return posture
+
+        parts = [posture]
+        for key, label in (("sec", "SEC"), ("yfinance", "MARKET")):
+            successes = self._collection_count(provider_counts, key)
+            if successes is not None:
+                parts.append(f"{label} {successes}/{requested}")
+        return " / ".join(parts)
+
+    @staticmethod
+    def _latest_live_retrieval(collection: Mapping[str, object]) -> str | None:
+        timestamps: list[str] = []
+        mapping = collection.get("mapping")
+        if isinstance(mapping, dict):
+            value = mapping.get("retrieved_at")
+            if isinstance(value, str) and value.strip():
+                timestamps.append(value.strip())
+
+        issuers = collection.get("issuers")
+        if isinstance(issuers, list):
+            for issuer in issuers:
+                if not isinstance(issuer, dict):
+                    continue
+                providers = issuer.get("providers")
+                if not isinstance(providers, dict):
+                    continue
+                for provider in providers.values():
+                    if not isinstance(provider, dict):
+                        continue
+                    value = provider.get("retrieved_at")
+                    if isinstance(value, str) and value.strip():
+                        timestamps.append(value.strip())
+        return max(timestamps, default=None)
+
+    @staticmethod
+    def _live_issue_note(collection: Mapping[str, object]) -> str | None:
+        failures = collection.get("failures")
+        if not isinstance(failures, list):
+            return None
+        for failure in failures:
+            if not isinstance(failure, dict):
+                continue
+            ticker = failure.get("ticker")
+            provider = failure.get("provider")
+            error = failure.get("error")
+            labels = [value.strip() for value in (ticker, provider) if isinstance(value, str) and value.strip()]
+            if isinstance(error, str) and error.strip():
+                prefix = " / ".join(labels) or "provider"
+                return f"{prefix}: {error.strip()}"[:160]
+            if labels:
+                return f"{' / '.join(labels)}: source error reported"
+        return None
+
     def _reviewed_issuers(self) -> int | None:
+        collection = self._live_collection()
+        if collection is not None:
+            ready = self._collection_count(collection, "ready_count")
+            if ready is not None:
+                return ready
         for event in reversed(self._events):
             raw_value = event.payload.get("reviewed_issuers")
             if raw_value is None and event.payload.get("tool") == "demo.universe_map":
@@ -625,18 +882,25 @@ class RunScreen(Screen[None]):
         else:
             self.query_one("#results-detail", Static).update(self._empty_results_markup(state))
 
+        collection = self._live_collection()
+        requested = state.spec.universe_size
+        if collection is not None:
+            reported_requested = self._collection_count(collection, "requested_count")
+            if reported_requested is not None:
+                requested = reported_requested
         reviewed = self._reviewed_issuers()
         if reviewed is not None:
-            coverage_value = f"{reviewed} / {state.spec.universe_size}"
+            coverage_value = f"{reviewed} / {requested}"
         elif state.status in {RunStatus.IDLE, RunStatus.PLANNING}:
-            coverage_value = f"PENDING / {state.spec.universe_size}"
+            coverage_value = f"PENDING / {requested}"
         elif state.status in {RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.SYNTHESIZING}:
-            coverage_value = f"IN PROGRESS / {state.spec.universe_size}"
+            coverage_value = f"IN PROGRESS / {requested}"
         elif state.status in {RunStatus.CANCELLED, RunStatus.FAILED}:
-            coverage_value = f"PARTIAL / {state.spec.universe_size}"
+            coverage_value = f"PARTIAL / {requested}"
         else:
-            coverage_value = f"N/R / {state.spec.universe_size}"
-        self.query_one("#result-coverage", Static).update(f"[dim]REVIEWED / REQUESTED[/dim]\n[b]{coverage_value}[/b]")
+            coverage_value = f"N/R / {requested}"
+        coverage_label = "USABLE / REQUESTED" if collection is not None else "REVIEWED / REQUESTED"
+        self.query_one("#result-coverage", Static).update(f"[dim]{coverage_label}[/dim]\n[b]{coverage_value}[/b]")
         self.query_one("#result-surfaced", Static).update(f"[dim]CANDIDATES SURFACED[/dim]\n[b]{len(ranked)}[/b]")
         candidates_with_gaps = sum(bool(candidate.evidence_gaps) for candidate in ranked)
         self.query_one("#result-evidence", Static).update(
@@ -648,25 +912,59 @@ class RunScreen(Screen[None]):
         self.query_one("#result-quality", Static).update(
             f"[dim]DATA-QUALITY FLAGS[/dim]\n[b]{quality_flags} / {len(ranked)}[/b]"
         )
-        if self._synthetic_posture(state):
+        if collection is not None:
+            source_value = self._live_source_summary(collection)
+        elif self._synthetic_posture(state):
             source_value = "OFFLINE FIXTURE · NO LIVE READINESS"
         elif any(evidence.synthetic for evidence in state.evidence.values()):
             source_value = "MIXED SOURCES · VERIFY AS-OF"
         else:
             source_value = f"{_readable_token(state.spec.mode)} · VERIFY READINESS"
         self.query_one("#result-sources", Static).update(f"[dim]SOURCE POSTURE[/dim]\n[b]{escape(source_value)}[/b]")
-        self.query_one("#results-status", Static).update(self._results_status_markup(state, reviewed, len(ranked)))
+        self.query_one("#results-status", Static).update(
+            self._results_status_markup(state, reviewed, len(ranked), collection, requested)
+        )
 
     def _results_status_markup(
         self,
         state: RunState,
         reviewed: int | None,
         candidate_count: int,
+        collection: Mapping[str, object] | None,
+        requested: int,
     ) -> str:
         if reviewed is None:
-            coverage = f"review count not reported; {state.spec.universe_size} requested"
+            count_label = "usable evidence count" if collection is not None else "review count"
+            coverage = f"{count_label} not reported; {requested} requested"
+        elif collection is not None:
+            coverage = f"{reviewed} of {requested} had usable evidence"
         else:
-            coverage = f"{reviewed} of {state.spec.universe_size} reviewed"
+            coverage = f"{reviewed} of {requested} reviewed"
+        if state.status is RunStatus.COMPLETE and collection is not None and collection.get("partial") is True:
+            failed = self._collection_count(collection, "failed_count") or 0
+            candidate_summary = (
+                f"{candidate_count} research candidates surfaced"
+                if candidate_count
+                else "no candidate brief was produced"
+            )
+            failed_summary = ""
+            if failed:
+                issuer_label = "issuer" if failed == 1 else "issuers"
+                failed_summary = f"; {failed} {issuer_label} failed"
+            notes = ["Rankings use available evidence only"]
+            latest = self._latest_live_retrieval(collection)
+            if latest is not None:
+                notes.append(f"latest source retrieval {latest[:80]}")
+            issue = self._live_issue_note(collection)
+            if issue is not None:
+                notes.append(f"first reported issue: {issue}")
+            note_text = escape(". ".join(notes))
+            return (
+                f"[b #E3B341]PARTIAL LIVE RESULTS[/b #E3B341]  {coverage}{failed_summary}; "
+                f"{candidate_summary}.\n[dim]{note_text}. This is not an investment "
+                "recommendation.[/dim]"
+            )
+
         if state.status is RunStatus.COMPLETE:
             if candidate_count:
                 headline = (
@@ -714,6 +1012,14 @@ class RunScreen(Screen[None]):
         return "[b #7AA2F7]PREPARING BOUNDED RUN[/b #7AA2F7]  No candidate ranking is available yet."
 
     def _empty_results_markup(self, state: RunState) -> str:
+        collection = self._live_collection()
+        if state.status is RunStatus.COMPLETE and collection is not None and collection.get("partial") is True:
+            return (
+                "[b #E3B341]No candidate brief was produced from the partial live collection."
+                "[/b #E3B341]\n\nSome requested source evidence was unavailable. Inspect the "
+                "provider issue in the Results banner and Debug / Journal before rerunning."
+            )
+
         if state.status is RunStatus.COMPLETE:
             return (
                 "[b #E3B341]No research candidate met this run's triage criteria.[/b #E3B341]\n\n"
@@ -749,9 +1055,12 @@ class RunScreen(Screen[None]):
             if evidence is None:
                 evidence_lines.append(f"• [#E3B341]{escape(evidence_id)} — record unavailable[/#E3B341]")
             else:
-                evidence_lines.append(
-                    f"• {escape(evidence.title)} — [dim]{escape(evidence.source)} · {escape(evidence_id)}[/dim]"
-                )
+                provenance = [evidence.source, evidence_id]
+                if evidence.retrieved_at != "not provided":
+                    provenance.append(f"retrieved {evidence.retrieved_at}")
+                evidence_lines.append(f"• {escape(evidence.title)} — [dim]{escape(' · '.join(provenance))}[/dim]")
+                if evidence.source_url:
+                    evidence_lines.append(f"  [dim]Source URL: {escape(evidence.source_url)}[/dim]")
         if not evidence_lines:
             evidence_lines.append("[dim]No evidence records were linked.[/dim]")
         gap_lines = (
@@ -895,14 +1204,15 @@ class RunScreen(Screen[None]):
 
     async def action_restart_run(self) -> None:
         await self.controller.cancel()
-        cast("AlphaApp", self.app).launch_run(self.spec.restarted())
+        app = cast("AlphaApp", self.app)
+        app.launch_run(self.spec.restarted(), tickers=app.tickers)
 
     async def action_new_run(self) -> None:
         await self.controller.cancel()
-        cast("AlphaApp", self.app).show_mission()
+        cast("AlphaApp", self.app).show_mission(self.spec)
 
     def action_show_help(self) -> None:
-        self.app.push_screen(HelpScreen())
+        self.app.push_screen(HelpScreen(self.spec.mode))
 
     def action_show_debug(self) -> None:
         self.query_one("#run-tabs", TabbedContent).active = "debug-tab"
@@ -929,6 +1239,9 @@ class AlphaApp(App[None]):
         demo_delay_seconds: float = 0.18,
         artifact_root: Path = Path("artifacts/runs"),
         runtime_factory: RuntimeFactory | None = None,
+        live_runtime_factory: LiveRuntimeFactory | None = None,
+        live_readiness: LiveReadiness | None = None,
+        initial_tickers: tuple[str, ...] = (),
         journal_factory: JournalFactory | None = None,
     ) -> None:
         super().__init__()
@@ -936,18 +1249,28 @@ class AlphaApp(App[None]):
         self.demo_delay_seconds = demo_delay_seconds
         self.artifact_root = artifact_root
         self._runtime_factory = runtime_factory
+        self._live_runtime_factory = live_runtime_factory
+        self.live_readiness = live_readiness or LiveReadiness(blocker="Live runtime is not configured")
+        self.tickers = initial_tickers
         self._journal_factory = journal_factory
 
     def on_mount(self) -> None:
         if self.initial_spec is None:
-            self.push_screen(MissionScreen())
+            self.push_screen(MissionScreen(initial_tickers=self.tickers))
         else:
-            self.push_screen(self._make_run_screen(self.initial_spec))
+            self.push_screen(self._make_run_screen(self.initial_spec, self.tickers))
 
-    def _make_run_screen(self, spec: RunSpec) -> RunScreen:
-        runtime = (
-            self._runtime_factory(spec) if self._runtime_factory is not None else DemoRuntime(self.demo_delay_seconds)
-        )
+    def _make_run_screen(self, spec: RunSpec, tickers: tuple[str, ...] = ()) -> RunScreen:
+        if spec.mode == "live":
+            if self._live_runtime_factory is None:
+                raise RuntimeError("Live runtime is not configured; no fixture fallback was used")
+            runtime = self._live_runtime_factory(spec, tickers)
+        else:
+            runtime = (
+                self._runtime_factory(spec)
+                if self._runtime_factory is not None
+                else DemoRuntime(self.demo_delay_seconds)
+            )
         journal = (
             self._journal_factory(spec)
             if self._journal_factory is not None
@@ -955,8 +1278,10 @@ class AlphaApp(App[None]):
         )
         return RunScreen(spec, runtime, journal)
 
-    def launch_run(self, spec: RunSpec) -> None:
-        self.switch_screen(self._make_run_screen(spec))
+    def launch_run(self, spec: RunSpec, *, tickers: tuple[str, ...] = ()) -> None:
+        screen = self._make_run_screen(spec, tickers)
+        self.tickers = tickers
+        self.switch_screen(screen)
 
-    def show_mission(self) -> None:
-        self.switch_screen(MissionScreen())
+    def show_mission(self, spec: RunSpec | None = None) -> None:
+        self.switch_screen(MissionScreen(spec, self.tickers))
