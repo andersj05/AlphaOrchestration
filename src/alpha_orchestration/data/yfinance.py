@@ -14,6 +14,7 @@ from datetime import date, datetime
 from typing import Any
 
 from alpha_orchestration.data.observations import ObservationBatch
+from alpha_orchestration.data.universe import EquityScreenRequest
 
 
 class YFinanceUnavailable(RuntimeError):
@@ -58,6 +59,40 @@ class YFinanceClient:
                 market_cap=_optional_float(_first_present(info, "marketCap", "market_cap")),
                 exchange=_optional_text(info.get("exchange")),
             )
+
+        return await asyncio.to_thread(fetch)
+
+    async def screen_equities(self, request: EquityScreenRequest) -> dict[str, Any]:
+        """Return one plain-JSON page from a deterministic US-equity screen."""
+
+        if not isinstance(request, EquityScreenRequest):
+            raise ValueError("request must be an EquityScreenRequest")
+        yf = _load_yfinance()
+
+        def fetch() -> dict[str, Any]:
+            query = yf.EquityQuery(
+                "and",
+                [
+                    yf.EquityQuery("eq", ["region", "us"]),
+                    yf.EquityQuery("is-in", ["exchange", *request.exchange_codes]),
+                    yf.EquityQuery("gte", ["intradaymarketcap", request.minimum_market_cap]),
+                    yf.EquityQuery("gte", ["intradayprice", request.minimum_share_price]),
+                    yf.EquityQuery(
+                        "gte",
+                        ["avgdailyvol3m", request.minimum_average_daily_volume_3m],
+                    ),
+                ],
+            )
+            payload = yf.screen(
+                query,
+                offset=request.offset,
+                size=request.size,
+                sortField="intradaymarketcap",
+                sortAsc=False,
+            )
+            if not isinstance(payload, Mapping):
+                raise ValueError("yfinance equity screen returned a non-object payload")
+            return dict(payload)
 
         return await asyncio.to_thread(fetch)
 

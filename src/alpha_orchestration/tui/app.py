@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
@@ -66,6 +66,14 @@ from alpha_orchestration.tui.debug import (
 JournalFactory = Callable[[RunSpec], EventJournal]
 RuntimeFactory = Callable[[RunSpec], OrchestratorRuntime]
 LiveRuntimeFactory = Callable[[RunSpec, tuple[str, ...]], OrchestratorRuntime]
+AutomaticRuntimeFactory = Callable[[RunSpec], OrchestratorRuntime]
+
+AUTOMATIC_LIVE_MODE = "automatic_live"
+LIVE_MODES = frozenset({"live", AUTOMATIC_LIVE_MODE})
+
+
+def _is_live_mode(mode: str) -> bool:
+    return mode in LIVE_MODES
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,7 +185,7 @@ class HelpScreen(ModalScreen[None]):
         self.mode = mode
 
     def compose(self) -> ComposeResult:
-        if self.mode == "live":
+        if _is_live_mode(self.mode):
             posture = (
                 "This run requests live SEC and market data. CONFIGURED means a local prerequisite "
                 "exists; provider access is verified only by timestamped run evidence. Partial "
@@ -211,6 +219,62 @@ class HelpScreen(ModalScreen[None]):
         if event.button.id == "close-help":
             self.dismiss(None)
 
+class AutomaticPreflightScreen(Screen[None]):
+    """Fail-closed startup state for the zero-argument automatic workflow."""
+
+    BINDINGS = [
+        Binding("e", "expert_setup", "Expert setup"),
+        Binding("q", "quit_app", "Quit"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Container(id="automatic-preflight-shell"), VerticalScroll(id="automatic-preflight-card"):
+            yield Static("ALPHA / AUTOMATIC RESEARCH", id="automatic-preflight-brand")
+            yield Static(
+                "[b #FF6B6B]PREFLIGHT BLOCKED — NO RESEARCH STARTED[/b #FF6B6B]\n"
+                "The default broad-market workflow requires live SEC identity, market-data support, "
+                "and the automatic runtime. Missing prerequisites never fall back to fixtures.",
+                id="automatic-preflight-copy",
+                markup=True,
+            )
+            yield Static("", id="automatic-preflight-status", markup=True)
+            yield Static(
+                "Resolve the items above, then restart [b]python -m alpha_orchestration[/b].\n"
+                "Press [b]E[/b] for manual ticker or offline fixture controls.",
+                id="automatic-preflight-next",
+                markup=True,
+            )
+            with Horizontal(id="automatic-preflight-actions"):
+                yield Button("EXPERT SETUP", id="expert-setup", variant="primary")
+                yield Button("QUIT", id="quit", variant="default")
+
+    def on_mount(self) -> None:
+        readiness = cast("AlphaApp", self.app).automatic_readiness
+
+        def status(ready: bool) -> str:
+            return "[#7EE787]READY[/#7EE787]" if ready else "[#FF6B6B]MISSING[/#FF6B6B]"
+
+        blocker = f"\n\n[b]BLOCKER[/b]  {escape(readiness.blocker)}" if readiness.blocker else ""
+        self.query_one("#automatic-preflight-status", Static).update(
+            f"[b]SEC IDENTITY[/b]       {status(readiness.sec_identity_configured)}  "
+            "ALPHA_SEC_USER_AGENT (key name only)\n"
+            f"[b]MARKET PACKAGE[/b]     {status(readiness.yfinance_installed)}  "
+            'install the optional data extra with pip install -e ".[data]"\n'
+            f"[b]AUTOMATIC RUNTIME[/b]  {status(readiness.runtime_available)}"
+            f"{blocker}"
+        )
+
+    def action_expert_setup(self) -> None:
+        cast("AlphaApp", self.app).show_mission()
+
+    def action_quit_app(self) -> None:
+        self.app.exit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "expert-setup":
+            self.action_expert_setup()
+        elif event.button.id == "quit":
+            self.action_quit_app()
 
 class MissionScreen(Screen[None]):
     BINDINGS = [
@@ -457,10 +521,25 @@ class RunScreen(Screen[None]):
                             id="candidate-detail",
                             markup=True,
                         )
+
+            with TabPane("UNIVERSE", id="universe-tab"), Vertical(id="universe-shell"):
+                with Horizontal(id="universe-controls"):
+                    yield Input(placeholder="Search ticker, company, status, or rank", id="universe-search")
+                yield Static(
+                    "Waiting for an automatic-universe snapshot.",
+                    id="universe-summary",
+                    markup=True,
+                )
+                yield DataTable(id="universe-table")
             with TabPane("RESULTS", id="results-tab"), Vertical(id="results-shell"):
                 yield Static(
                     "[b #7AA2F7]PREPARING BOUNDED RUN[/b #7AA2F7]  No candidate ranking is available yet.",
                     id="results-status",
+                    markup=True,
+                )
+                yield Static(
+                    "[dim]UNIVERSE FUNNEL[/dim]  Waiting for controller-owned coverage telemetry.",
+                    id="results-funnel",
                     markup=True,
                 )
                 with Horizontal(id="results-summary"):
@@ -534,6 +613,11 @@ class RunScreen(Screen[None]):
         candidate_table.add_columns("TICKER", "PRIORITY", "STATUS")
         candidate_table.cursor_type = "row"
         candidate_table.zebra_stripes = True
+
+        universe_table = self.query_one("#universe-table", DataTable)
+        universe_table.add_columns("TICKER", "COMPANY", "STATUS", "RANK")
+        universe_table.cursor_type = "row"
+        universe_table.zebra_stripes = True
 
         debug_table = self.query_one("#debug-event-table", DataTable)
         debug_table.add_columns("SEQ", "TIME (UTC)", "KIND", "AGENT", "SUMMARY")
@@ -644,6 +728,8 @@ class RunScreen(Screen[None]):
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "debug-search":
             self._render_debug()
+        elif event.input.id == "universe-search":
+            self._render_universe(self.controller.state, self._universe_funnel())
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         if event.checkbox.id == "debug-follow":
@@ -681,7 +767,9 @@ class RunScreen(Screen[None]):
             RunStatus.FAILED: "#FF6B6B",
         }[state.status]
         mode_label = (
-            "LIVE DATA"
+            "AUTOMATIC LIVE"
+            if state.spec.mode == AUTOMATIC_LIVE_MODE
+            else "LIVE DATA"
             if state.spec.mode == "live"
             else "FIXTURE / SYNTHETIC"
             if state.spec.mode == "synthetic_demo"
@@ -695,16 +783,38 @@ class RunScreen(Screen[None]):
         )
         self.query_one("#run-progress", ProgressBar).update(progress=state.progress, total=100)
         self.query_one("#metric-progress", Static).update(f"[dim]PROGRESS[/dim]\n[b]{state.progress}%[/b]")
-        self.query_one("#metric-agents", Static).update(
-            f"[dim]AGENTS[/dim]\n[b]{state.complete_agents} / {state.spec.agent_budget}[/b]"
-        )
-        self.query_one("#metric-evidence", Static).update(f"[dim]EVIDENCE[/dim]\n[b]{len(state.evidence)}[/b]")
-        self.query_one("#metric-candidates", Static).update(f"[dim]CANDIDATES[/dim]\n[b]{len(state.candidates)}[/b]")
+        funnel = self._universe_funnel()
+        if state.spec.mode == AUTOMATIC_LIVE_MODE:
+            selected = self._funnel_count(funnel, "selected") if funnel is not None else None
+            if selected is None and funnel is not None:
+                selected = self._funnel_count(funnel, "eligible")
+            screened = self._funnel_count(funnel, "screened") if funnel is not None else None
+            screened_value = (
+                f"{screened:,} / {selected:,}" if screened is not None and selected is not None else "PENDING"
+            )
+            self.query_one("#metric-agents", Static).update(
+                f"[dim]LANES COMPLETE[/dim]\n[b]{state.complete_agents} / {state.spec.agent_budget}[/b]"
+            )
+            self.query_one("#metric-evidence", Static).update(
+                f"[dim]SCREENED / SELECTED[/dim]\n[b]{screened_value}[/b]"
+            )
+            self.query_one("#metric-candidates", Static).update(
+                f"[dim]SURFACED[/dim]\n[b]{len(state.candidates)}[/b]"
+            )
+        else:
+            self.query_one("#metric-agents", Static).update(
+                f"[dim]AGENTS[/dim]\n[b]{state.complete_agents} / {state.spec.agent_budget}[/b]"
+            )
+            self.query_one("#metric-evidence", Static).update(f"[dim]EVIDENCE[/dim]\n[b]{len(state.evidence)}[/b]")
+            self.query_one("#metric-candidates", Static).update(
+                f"[dim]CANDIDATES[/dim]\n[b]{len(state.candidates)}[/b]"
+            )
         self.query_one("#metric-engine", Static).update(self._execution_metric(state))
         self._render_pipeline(state)
         self._render_agents(state)
         self._render_evidence(state)
         self._render_candidates(state)
+        self._render_universe(state, funnel)
         self._render_results(state)
         self._render_safety_bar(state)
         tabs = self.query_one("#run-tabs", TabbedContent)
@@ -735,6 +845,13 @@ class RunScreen(Screen[None]):
             peak = completed.payload.get("observed_peak_active_tasks")
             if isinstance(peak, int) and not isinstance(peak, bool):
                 return f"[dim]OBSERVED PEAK / LIMIT[/dim]\n[b]{peak} / {limit}[/b]"
+        if state.spec.mode == AUTOMATIC_LIVE_MODE:
+            funnel = self._universe_funnel()
+            if funnel is not None:
+                peak = self._funnel_count(funnel, "observed_peak_analysis_tasks")
+                configured = self._funnel_count(funnel, "configured_agent_lanes") or limit
+                if peak is not None:
+                    return f"[dim]ANALYSIS PEAK / LANES[/dim]\n[b]{peak} / {configured}[/b]"
         if planned is not None:
             actual = planned.payload.get("actual_active_slots")
             if isinstance(actual, int) and not isinstance(actual, bool):
@@ -767,6 +884,130 @@ class RunScreen(Screen[None]):
             if isinstance(value, dict):
                 return value
         return None
+
+    def _universe_funnel(self) -> Mapping[str, object] | None:
+        for event in reversed(self._events):
+            value = event.payload.get("universe_funnel")
+            if isinstance(value, dict):
+                return value
+        return None
+
+    def _universe_rows(self, funnel: Mapping[str, object] | None) -> tuple[Mapping[str, object], ...]:
+        for event in reversed(self._events):
+            rows = event.payload.get("universe_rows")
+            if isinstance(rows, list):
+                return tuple(row for row in rows if isinstance(row, dict))
+            event_funnel = event.payload.get("universe_funnel")
+            if isinstance(event_funnel, dict):
+                rows = event_funnel.get("universe_rows")
+                if isinstance(rows, list):
+                    return tuple(row for row in rows if isinstance(row, dict))
+        if funnel is not None:
+            rows = funnel.get("universe_rows")
+            if isinstance(rows, list):
+                return tuple(row for row in rows if isinstance(row, dict))
+        return ()
+
+    @staticmethod
+    def _funnel_count(funnel: Mapping[str, object], key: str) -> int | None:
+        value = funnel.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        return None
+
+    def _render_universe_funnel(self, state: RunState, funnel: Mapping[str, object] | None) -> None:
+        target = state.spec.universe_size
+        if funnel is None:
+            self.query_one("#results-funnel", Static).update(
+                f"[dim]UNIVERSE FUNNEL[/dim]  Waiting for coverage telemetry · target {target:,} selected issuers"
+            )
+            return
+
+        def count(key: str, fallback: str | None = None) -> str:
+            value = self._funnel_count(funnel, key)
+            if value is None and fallback is not None:
+                value = self._funnel_count(funnel, fallback)
+            return "N/R" if value is None else f"{value:,}"
+
+        profile = str(funnel.get("profile") or "UNSPECIFIED PROFILE").strip().upper()
+        stage = str(funnel.get("stage") or "in progress").replace("_", " ").upper()
+        batches_done = self._funnel_count(funnel, "batches_completed")
+        batches_total = self._funnel_count(funnel, "batches_total")
+        batch_text = ""
+        if batches_done is not None and batches_total is not None:
+            batch_text = f" · BATCHES {batches_done:,}/{batches_total:,}"
+        provider_matches = self._funnel_count(funnel, "provider_matches")
+        if provider_matches is None:
+            provider_matches = self._funnel_count(funnel, "discovered")
+        inspected = self._funnel_count(funnel, "inspected")
+        uninspected = self._funnel_count(funnel, "uninspected")
+        if uninspected is None and provider_matches is not None and inspected is not None:
+            uninspected = max(0, provider_matches - inspected)
+        uninspected_text = "N/R" if uninspected is None else f"{uninspected:,}"
+        self.query_one("#results-funnel", Static).update(
+            f"[dim]{escape(profile)} · PROVIDER MATCHES {count('provider_matches', 'discovered')} · "
+            f"INSPECTED {count('inspected')} · SELECTED {count('selected', 'eligible')}[/dim]\n"
+            f"[b]{count('screened')}[/b] screened  →  [b]{count('deep_reviewed')}[/b] deep-reviewed  →  "
+            f"[b #C099FF]{count('surfaced')}[/b #C099FF] surfaced\n"
+            f"[dim]STAGE {escape(stage)}{batch_text} · EXCLUDED AFTER INSPECTION {count('excluded')} · "
+            f"UNINSPECTED {uninspected_text} · FAILED {count('failed')}[/dim]"
+        )
+
+    def _render_universe(self, state: RunState, funnel: Mapping[str, object] | None) -> None:
+        del state
+        table = self.query_one("#universe-table", DataTable)
+        table.clear(columns=False)
+        rows = self._universe_rows(funnel)
+        query = self.query_one("#universe-search", Input).value.strip().casefold()
+        visible: list[Mapping[str, object]] = []
+        for row in rows:
+            ticker = str(row.get("ticker") or "").strip().upper()
+            company = str(row.get("company") or row.get("title") or "").strip()
+            status = str(row.get("status") or "not reported").strip().replace("_", " ").upper()
+            rank = row.get("rank")
+            if not isinstance(rank, int) or isinstance(rank, bool):
+                rank = row.get("universe_rank")
+            rank_text = str(rank) if isinstance(rank, int) and not isinstance(rank, bool) else "—"
+            haystack = " ".join((ticker, company, status, rank_text)).casefold()
+            if query and query not in haystack:
+                continue
+            visible.append(row)
+            table.add_row(ticker or "—", company or "—", status, rank_text, key=f"{ticker}:{len(visible)}")
+
+        profile = "US_LARGE_LIQUID_V1"
+        if funnel is not None:
+            raw_profile = funnel.get("profile")
+            if isinstance(raw_profile, str) and raw_profile.strip():
+                profile = raw_profile.strip().upper()
+        selected = self._funnel_count(funnel, "selected") if funnel is not None else None
+        if selected is None and funnel is not None:
+            selected = self._funnel_count(funnel, "eligible")
+        screened = self._funnel_count(funnel, "screened") if funnel is not None else None
+        if rows:
+            selected_text = "N/R" if selected is None else f"{selected:,}"
+            screened_text = "N/R" if screened is None else f"{screened:,}"
+            self.query_one("#universe-summary", Static).update(
+                f"[b]{escape(profile)}[/b]  ·  showing {len(visible):,} of {len(rows):,} persisted rows  ·  "
+                f"selected {selected_text}  ·  screened {screened_text}"
+            )
+        else:
+            self.query_one("#universe-summary", Static).update(
+                f"[b]{escape(profile)}[/b]  ·  no row-level universe roster in the latest event snapshot. "
+                "Open [b]DEBUG / JOURNAL[/b] or the persisted run artifact for exact coverage and exclusions."
+            )
+
+    def _automatic_source_summary(self, funnel: Mapping[str, object] | None) -> str:
+        if funnel is None:
+            return "AUTOMATIC LIVE · SOURCE POSTURE PENDING"
+        posture = funnel.get("source_posture")
+        parts = [str(posture).strip()[:64] if isinstance(posture, str) and posture.strip() else "LIVE SOURCES"]
+        analysis_mode = funnel.get("analysis_mode")
+        if isinstance(analysis_mode, str) and analysis_mode.strip():
+            parts.append(analysis_mode.strip()[:32])
+        as_of = funnel.get("as_of")
+        if isinstance(as_of, str) and as_of.strip():
+            parts.append(f"AS OF {as_of.strip()[:24]}")
+        return " / ".join(parts)
 
     @staticmethod
     def _collection_count(collection: Mapping[str, object], key: str) -> int | None:
@@ -882,26 +1123,44 @@ class RunScreen(Screen[None]):
         else:
             self.query_one("#results-detail", Static).update(self._empty_results_markup(state))
 
+        funnel = self._universe_funnel()
+        automatic = state.spec.mode == AUTOMATIC_LIVE_MODE
+        self._render_universe_funnel(state, funnel if automatic else None)
         collection = self._live_collection()
         requested = state.spec.universe_size
         if collection is not None:
             reported_requested = self._collection_count(collection, "requested_count")
             if reported_requested is not None:
                 requested = reported_requested
-        reviewed = self._reviewed_issuers()
-        if reviewed is not None:
-            coverage_value = f"{reviewed} / {requested}"
-        elif state.status in {RunStatus.IDLE, RunStatus.PLANNING}:
-            coverage_value = f"PENDING / {requested}"
-        elif state.status in {RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.SYNTHESIZING}:
-            coverage_value = f"IN PROGRESS / {requested}"
-        elif state.status in {RunStatus.CANCELLED, RunStatus.FAILED}:
-            coverage_value = f"PARTIAL / {requested}"
+        if automatic and funnel is not None:
+            selected_count = self._funnel_count(funnel, "selected")
+            if selected_count is None:
+                selected_count = self._funnel_count(funnel, "eligible")
+            screened = self._funnel_count(funnel, "screened")
+            if selected_count is not None:
+                requested = selected_count
+            reviewed = screened
         else:
-            coverage_value = f"N/R / {requested}"
-        coverage_label = "USABLE / REQUESTED" if collection is not None else "REVIEWED / REQUESTED"
+            reviewed = self._reviewed_issuers()
+        if reviewed is not None:
+            coverage_value = f"{reviewed:,} / {requested:,}"
+        elif state.status in {RunStatus.IDLE, RunStatus.PLANNING}:
+            coverage_value = f"PENDING / {requested:,}"
+        elif state.status in {RunStatus.RUNNING, RunStatus.PAUSED, RunStatus.SYNTHESIZING}:
+            coverage_value = f"IN PROGRESS / {requested:,}"
+        elif state.status in {RunStatus.CANCELLED, RunStatus.FAILED}:
+            coverage_value = f"PARTIAL / {requested:,}"
+        else:
+            coverage_value = f"N/R / {requested:,}"
+        if automatic:
+            coverage_label = "SCREENED / SELECTED"
+        else:
+            coverage_label = "USABLE / REQUESTED" if collection is not None else "REVIEWED / REQUESTED"
         self.query_one("#result-coverage", Static).update(f"[dim]{coverage_label}[/dim]\n[b]{coverage_value}[/b]")
-        self.query_one("#result-surfaced", Static).update(f"[dim]CANDIDATES SURFACED[/dim]\n[b]{len(ranked)}[/b]")
+        surfaced = len(ranked)
+        if automatic and funnel is not None:
+            surfaced = self._funnel_count(funnel, "surfaced") or surfaced
+        self.query_one("#result-surfaced", Static).update(f"[dim]CANDIDATES SURFACED[/dim]\n[b]{surfaced:,}[/b]")
         candidates_with_gaps = sum(bool(candidate.evidence_gaps) for candidate in ranked)
         self.query_one("#result-evidence", Static).update(
             f"[dim]EVIDENCE / OPEN GAPS[/dim]\n[b]{len(state.evidence)} records · {candidates_with_gaps} names[/b]"
@@ -912,7 +1171,9 @@ class RunScreen(Screen[None]):
         self.query_one("#result-quality", Static).update(
             f"[dim]DATA-QUALITY FLAGS[/dim]\n[b]{quality_flags} / {len(ranked)}[/b]"
         )
-        if collection is not None:
+        if automatic:
+            source_value = self._automatic_source_summary(funnel)
+        elif collection is not None:
             source_value = self._live_source_summary(collection)
         elif self._synthetic_posture(state):
             source_value = "OFFLINE FIXTURE · NO LIVE READINESS"
@@ -921,10 +1182,72 @@ class RunScreen(Screen[None]):
         else:
             source_value = f"{_readable_token(state.spec.mode)} · VERIFY READINESS"
         self.query_one("#result-sources", Static).update(f"[dim]SOURCE POSTURE[/dim]\n[b]{escape(source_value)}[/b]")
-        self.query_one("#results-status", Static).update(
-            self._results_status_markup(state, reviewed, len(ranked), collection, requested)
-        )
+        if automatic:
+            status_markup = self._automatic_results_status(state, funnel, len(ranked))
+        else:
+            status_markup = self._results_status_markup(state, reviewed, len(ranked), collection, requested)
+        self.query_one("#results-status", Static).update(status_markup)
 
+    def _automatic_results_status(
+        self,
+        state: RunState,
+        funnel: Mapping[str, object] | None,
+        candidate_count: int,
+    ) -> str:
+        def count(key: str) -> str:
+            if funnel is None:
+                return "not reported"
+            value = self._funnel_count(funnel, key)
+            return "not reported" if value is None else f"{value:,}"
+
+        selected = count("selected")
+        if selected == "not reported":
+            selected = count("eligible")
+        provider_matches = count("provider_matches")
+        if provider_matches == "not reported":
+            provider_matches = count("discovered")
+        coverage = (
+            f"{provider_matches} provider matches; {count('inspected')} inspected; {selected} selected; "
+            f"{count('screened')} screened; {count('deep_reviewed')} deep-reviewed; {count('surfaced')} surfaced"
+        )
+        if state.status is RunStatus.COMPLETE:
+            failures = self._funnel_count(funnel, "failed") if funnel is not None else None
+            heading = "AUTOMATIC SCREEN COMPLETE WITH GAPS" if failures else "AUTOMATIC SCREEN COMPLETE"
+            color = "#E3B341" if failures else "#7EE787"
+            excluded = count("excluded")
+            retrieval = funnel.get("retrieved_at") if funnel is not None else None
+            retrieval_note = (
+                f" Latest retrieval {escape(retrieval[:80])}."
+                if isinstance(retrieval, str) and retrieval.strip()
+                else ""
+            )
+            return (
+                f"[b {color}]{heading}[/b {color}]  {coverage}; "
+                f"{excluded} excluded after inspection; {count('failed')} failed.\n"
+                f"[dim]{candidate_count} persisted research candidates."
+                f"{retrieval_note} Priority is triage—not expected return or an investment recommendation.[/dim]"
+            )
+        if state.status is RunStatus.FAILED:
+            failure = escape((state.failure or "Unspecified runtime failure")[:160])
+            return (
+                f"[b #FF6B6B]AUTOMATIC SCREEN FAILED[/b #FF6B6B]  {failure}\n"
+                f"[dim]{coverage}. Coverage is incomplete; no fixture fallback was used.[/dim]"
+            )
+        if state.status is RunStatus.CANCELLED:
+            return (
+                f"[b #E3B341]AUTOMATIC SCREEN CANCELLED[/b #E3B341]  {coverage}.\n"
+                "[dim]Persisted candidates are provisional until a complete rerun.[/dim]"
+            )
+        if state.status is RunStatus.PAUSED:
+            return f"[b #E3B341]AUTOMATIC SCREEN PAUSED[/b #E3B341]  {coverage}."
+        if state.status is RunStatus.SYNTHESIZING:
+            return f"[b #C099FF]SYNTHESIZING RESEARCH PRIORITIES[/b #C099FF]  {coverage}."
+        if state.status is RunStatus.RUNNING:
+            return (
+                f"[b #54D6FF]AUTOMATIC MARKET SCREEN IN PROGRESS[/b #54D6FF]  {coverage}.\n"
+                "[dim]The funnel is provisional and updates from persisted controller telemetry.[/dim]"
+            )
+        return "[b #7AA2F7]PREPARING AUTOMATIC LIVE SCREEN[/b #7AA2F7]  No provider request has started yet."
     def _results_status_markup(
         self,
         state: RunState,
@@ -1240,8 +1563,11 @@ class AlphaApp(App[None]):
         artifact_root: Path = Path("artifacts/runs"),
         runtime_factory: RuntimeFactory | None = None,
         live_runtime_factory: LiveRuntimeFactory | None = None,
+        automatic_runtime_factory: AutomaticRuntimeFactory | None = None,
         live_readiness: LiveReadiness | None = None,
+        automatic_readiness: LiveReadiness | None = None,
         initial_tickers: tuple[str, ...] = (),
+        startup_mode: str = "mission",
         journal_factory: JournalFactory | None = None,
     ) -> None:
         super().__init__()
@@ -1250,18 +1576,41 @@ class AlphaApp(App[None]):
         self.artifact_root = artifact_root
         self._runtime_factory = runtime_factory
         self._live_runtime_factory = live_runtime_factory
+        self._automatic_runtime_factory = automatic_runtime_factory
         self.live_readiness = live_readiness or LiveReadiness(blocker="Live runtime is not configured")
+        self.automatic_readiness = automatic_readiness or self.live_readiness
         self.tickers = initial_tickers
+        self.startup_mode = startup_mode
         self._journal_factory = journal_factory
 
     def on_mount(self) -> None:
         if self.initial_spec is None:
-            self.push_screen(MissionScreen(initial_tickers=self.tickers))
-        else:
+            if self.startup_mode == AUTOMATIC_LIVE_MODE:
+                self.push_screen(AutomaticPreflightScreen())
+            else:
+                self.push_screen(MissionScreen(initial_tickers=self.tickers))
+            return
+        if self.initial_spec.mode == AUTOMATIC_LIVE_MODE and not self.automatic_readiness.ready:
+            self.push_screen(AutomaticPreflightScreen())
+            return
+        try:
             self.push_screen(self._make_run_screen(self.initial_spec, self.tickers))
+        except (RuntimeError, ValueError) as exc:
+            if self.initial_spec.mode != AUTOMATIC_LIVE_MODE:
+                raise
+            self.automatic_readiness = replace(
+                self.automatic_readiness,
+                runtime_available=False,
+                blocker=str(exc),
+            )
+            self.push_screen(AutomaticPreflightScreen())
 
     def _make_run_screen(self, spec: RunSpec, tickers: tuple[str, ...] = ()) -> RunScreen:
-        if spec.mode == "live":
+        if spec.mode == AUTOMATIC_LIVE_MODE:
+            if self._automatic_runtime_factory is None:
+                raise RuntimeError("Automatic live runtime is unavailable; no fixture fallback was used")
+            runtime = self._automatic_runtime_factory(spec)
+        elif spec.mode == "live":
             if self._live_runtime_factory is None:
                 raise RuntimeError("Live runtime is not configured; no fixture fallback was used")
             runtime = self._live_runtime_factory(spec, tickers)
@@ -1284,4 +1633,6 @@ class AlphaApp(App[None]):
         self.switch_screen(screen)
 
     def show_mission(self, spec: RunSpec | None = None) -> None:
+        if spec is not None and spec.mode == AUTOMATIC_LIVE_MODE:
+            spec = None
         self.switch_screen(MissionScreen(spec, self.tickers))

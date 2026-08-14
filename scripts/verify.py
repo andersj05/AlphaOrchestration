@@ -45,6 +45,13 @@ def build_checks(python: str = sys.executable) -> tuple[Check, ...]:
             (python, str(REPOSITORY_ROOT / "scripts" / "run_dag_harness.py")),
         ),
         Check(
+            "Automatic 300-issuer scale harness",
+            (
+                python,
+                str(REPOSITORY_ROOT / "scripts" / "run_automatic_harness.py"),
+            ),
+        ),
+        Check(
             "Installed package smoke",
             (
                 python,

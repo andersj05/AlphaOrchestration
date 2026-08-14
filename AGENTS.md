@@ -35,12 +35,12 @@ From the repository root, run:
 .venv/bin/python scripts/verify.py
 ```
 
-This is the release-blocking local gate. Its seven stages check project-memory integrity,
+This is the release-blocking local gate. Its eight stages check project-memory integrity,
 self-test Python-process network denial, run Ruff and strict pytest, execute and replay
-the deterministic fan-out/fan-in harness, smoke-test the installed package, and exercise
-CLI help. The guard covers default Python code paths, not non-Python or deliberately
-unisolated child processes. Add a focused regression test for every bug or trust-boundary
-change before running the full gate.
+the deterministic fan-out/fan-in and 300-issuer automatic-universe harnesses, smoke-test
+the installed package, and exercise CLI help. The guard covers default Python code paths,
+not non-Python or deliberately unisolated child processes. Add a focused regression test
+for every bug or trust-boundary change before running the full gate.
 
 Formatting is not yet a blocking gate because the repository has acknowledged legacy
 formatting drift. Do not add `ruff format --check .` incidentally or reformat unrelated
