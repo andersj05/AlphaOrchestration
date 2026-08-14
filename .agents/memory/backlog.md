@@ -10,8 +10,6 @@ Last reviewed: 2026-08-13
 2. Gather reviewer feedback on automatic preflight, Results and Universe interpretation,
    source posture, partial failures, exclusion semantics, cache behavior, and operational
    clarity; convert it into scoped follow-up changes.
-3. Release the automatic-universe prototype through the reviewed feature-to-`dev` pull
-   request, then through the separate `dev`-to-`main` release workflow when ready.
 
 ## Next
 
